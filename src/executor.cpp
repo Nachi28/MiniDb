@@ -621,13 +621,20 @@ ResultSet Executor::exec_select(const SelectStmt& stmt) {
 
     static const Row kNoRow;  // stands in for the single row of a FROM-less SELECT
 
-    // 3. Scan and filter. Rows are referenced, not copied, until projection.
+    // 3. Scan and filter. Rows are decoded out of the B+tree one at a time and
+    //    only the survivors are kept, so a selective WHERE never materialises
+    //    the whole table. `matched` points into `scanned`, which is not touched
+    //    again once built.
+    std::vector<Row> scanned;
     std::vector<const Row*> matched;
     if (table != nullptr) {
-        for (const Row& row : table->rows()) {
-            if (stmt.where && !is_true(evaluate(*stmt.where, table, &row))) continue;
-            matched.push_back(&row);
-        }
+        table->scan([&](std::int64_t, Row& row) {
+            if (stmt.where && !is_true(evaluate(*stmt.where, table, &row))) return true;
+            scanned.push_back(std::move(row));
+            return true;
+        });
+        matched.reserve(scanned.size());
+        for (const Row& row : scanned) matched.push_back(&row);
     } else if (!stmt.where || is_true(evaluate(*stmt.where, nullptr, nullptr))) {
         matched.push_back(&kNoRow);
     }

@@ -18,6 +18,9 @@ add_library(minidb_core
   src/lexer.cpp
   src/ast.cpp
   src/parser.cpp
+  src/record.cpp
+  src/pager.cpp
+  src/btree.cpp
   src/table.cpp
   src/database.cpp
   src/executor.cpp
@@ -39,6 +42,9 @@ endif()
 
 add_executable(minidb src/main.cpp)
 target_link_libraries(minidb PRIVATE minidb_core)
+
+add_executable(minidb_bench bench/main.cpp)
+target_link_libraries(minidb_bench PRIVATE minidb_core)
 
 if(MINIDB_BUILD_TESTS)
   enable_testing()

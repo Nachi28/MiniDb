@@ -104,6 +104,7 @@ void print_help() {
               << "  .help              show this message\n"
               << "  .tables            list tables\n"
               << "  .schema [table]    show column definitions\n"
+              << "  .flush             write everything to disk now\n"
               << "  .exit / .quit      leave the shell\n"
               << "Anything else is SQL; statements end with ';'.\n";
 }
@@ -145,6 +146,9 @@ bool handle_dot_command(const std::string& line, Database& db, bool& should_exit
         }
     } else if (command == ".schema") {
         print_schema(db, argument);
+    } else if (command == ".flush") {
+        db.flush();
+        std::cout << "flushed" << "\n";
     } else {
         std::cout << "unknown command: " << command << " (try .help)\n";
     }
@@ -154,21 +158,42 @@ bool handle_dot_command(const std::string& line, Database& db, bool& should_exit
 }  // namespace
 
 int main(int argc, char** argv) {
-    Database db;
+    std::string db_path = Database::kMemory;
+    std::string script;
+
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--db" && i + 1 < argc) {
+            db_path = argv[++i];
+        } else if (arg == "--help" || arg == "-h") {
+            std::cout << "usage: minidb [--db FILE] [SCRIPT.sql]\n";
+            return 0;
+        } else if (script.empty()) {
+            script = arg;
+        } else {
+            std::cerr << "minidb: unexpected argument " << arg << "\n";
+            return 2;
+        }
+    }
+
+    Database db(db_path);
     Executor executor(db);
 
-    if (argc > 1) {  // batch mode: minidb script.sql
-        std::ifstream file(argv[1]);
+    if (!script.empty()) {  // batch mode
+        std::ifstream file(script);
         if (!file) {
-            std::cerr << "minidb: cannot open " << argv[1] << "\n";
+            std::cerr << "minidb: cannot open " << script << "\n";
             return 2;
         }
         std::ostringstream buffer;
         buffer << file.rdbuf();
-        return run_sql(buffer.str(), executor) ? 0 : 1;
+        const bool ok = run_sql(buffer.str(), executor);
+        db.flush();
+        return ok ? 0 : 1;
     }
 
-    std::cout << "MiniDB 0.2.0 - phase 2 (aggregates and grouping)\n"
+    std::cout << "MiniDB 0.3.0 - phase 3 (B+tree storage)\n"
+              << "database: " << db.path() << "\n"
               << "Type .help for shell commands, .exit to quit.\n";
 
     std::string pending;

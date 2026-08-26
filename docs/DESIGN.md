@@ -145,3 +145,73 @@ check would not.
 SQLite accepts `GROUP BY total`; standard SQL does not, because `GROUP BY` is
 logically evaluated before the select list exists. MiniDB currently follows the
 standard. Worth revisiting when differential testing against SQLite starts.
+
+## Slotted pages, so rows of different sizes share a page
+
+A node page keeps a sorted array of 2-byte offsets growing forward from the
+header while cell data grows backward from the end of the page. Free space is
+whatever is left in the middle.
+
+The alternative, fixed-size slots, is far simpler but forces every row to the
+size of the largest one. With slots, a row costs exactly its encoded length,
+and the sorted offset array still gives a binary search over keys without
+touching the cells.
+
+Deleting a cell only removes its slot; the bytes stay behind as a hole until
+`compact()` rebuilds the heap. Compaction is triggered lazily, when an insert
+finds too little contiguous space but enough total space. Reclaiming eagerly on
+every delete would move cells far more often than it needs to.
+
+## The buffer pool pins pages, and PageGuard makes that automatic
+
+A pointer into a buffered page is only valid while that page cannot be evicted.
+Rather than trusting callers to remember, `Pager::fetch` returns a `PageGuard`
+that pins on construction and unpins on destruction, and only `mutable_data()`
+marks the page dirty -- so a page cannot be modified without also being marked.
+
+Eviction is LRU over unpinned frames only, with write-back. A B+tree insert
+holds a guard at every level of the path it is descending, which is why the pool
+must be larger than the tree is tall; a pool with every frame pinned raises a
+clear error rather than corrupting something.
+
+Frames are held by `unique_ptr` so that growing the pool (which an in-memory
+database does instead of evicting) cannot move a buffer out from under a guard
+that is already holding a pointer to it.
+
+## Appends get their own split rule
+
+Rowids ascend, so in practice every leaf split happens at the right edge of the
+tree. Splitting those down the middle leaves each leaf permanently half full:
+measured over 200,000 rows, that was 4,522 pages and a 17.7 MB file.
+
+Detecting that the incoming key is the largest and giving it a page of its own
+instead -- leaving the full page full -- produced 2,263 pages and 8.8 MB for the
+same data, with 30% fewer disk reads. The mirror case handles descending
+inserts. Keys landing in the middle still split evenly, because for those the
+balanced split is the right answer.
+
+This is the same optimisation SQLite and InnoDB make, and it is worth about half
+the file.
+
+## The catalogue is a table like any other
+
+Schemas live in their own B+tree whose root page is recorded in the file header.
+Each entry is encoded with the ordinary record encoder -- name, root page, next
+rowid, then column name/type pairs -- so there is no second serialisation format
+to keep in step with the first.
+
+The consequence worth noting: a table's root page moves whenever its tree gains
+a level, so the catalogue entry has to be rewritten. Tables track a dirty flag
+and `Database::flush` writes back the ones that moved.
+
+## Known gaps, deliberately
+
+- **Deletes do not rebalance.** `erase` removes the cell and leaves the leaf
+  where it is, even if it empties. Space inside a page is reused; a fully empty
+  page is not returned to a free list. Merging siblings is real work and belongs
+  with `DELETE`, which does not exist yet.
+- **No overflow pages.** A row must fit in a page alongside at least one other,
+  so payloads are capped at 1,980 bytes and larger ones are rejected with a clear
+  error rather than silently truncated.
+- **No crash safety.** A flush that is interrupted can leave a torn file. That is
+  exactly what phase 4's write-ahead log is for.

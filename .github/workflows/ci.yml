@@ -29,3 +29,16 @@ jobs:
       - name: Run the demo script
         if: runner.os != 'Windows'
         run: ./build/minidb examples/demo.sql
+
+      - name: Check that data survives a restart
+        if: runner.os != 'Windows'
+        run: |
+          ./build/minidb --db ci.db -h > /dev/null
+          echo "CREATE TABLE t (a INTEGER); INSERT INTO t VALUES (1),(2),(3);" > w.sql
+          echo "SELECT SUM(a) FROM t;" > r.sql
+          ./build/minidb --db ci.db w.sql
+          ./build/minidb --db ci.db r.sql | grep -q 6
+
+      - name: Benchmark smoke test
+        if: runner.os != 'Windows'
+        run: ./build/minidb_bench --rows 20000 --db bench.db

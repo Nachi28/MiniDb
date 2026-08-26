@@ -3,6 +3,10 @@ add_executable(minidb_tests
   test_value.cpp
   test_lexer.cpp
   test_parser.cpp
+  test_record.cpp
+  test_pager.cpp
+  test_btree.cpp
+  test_storage.cpp
   test_executor.cpp
 )
 
