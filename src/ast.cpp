@@ -59,6 +59,17 @@ ExprPtr Expr::make_binary(BinaryOp op, ExprPtr lhs, ExprPtr rhs, std::size_t pos
     return e;
 }
 
+ExprPtr Expr::make_call(std::string name, std::vector<ExprPtr> args, bool star_arg,
+                        std::size_t pos) {
+    auto e = std::make_unique<Expr>();
+    e->kind = ExprKind::FunctionCall;
+    e->function = std::move(name);
+    e->args = std::move(args);
+    e->star_arg = star_arg;
+    e->pos = pos;
+    return e;
+}
+
 std::string to_string(const Expr& e) {
     switch (e.kind) {
         case ExprKind::Literal:
@@ -72,6 +83,20 @@ std::string to_string(const Expr& e) {
         case ExprKind::Binary:
             return "(" + to_string(*e.left) + " " + binary_op_symbol(e.binary_op) + " " +
                    to_string(*e.right) + ")";
+        case ExprKind::FunctionCall: {
+            // Rendered without the outer parens a binary node gets, so an
+            // unaliased COUNT(*) column is simply named COUNT(*).
+            std::string out = e.function + "(";
+            if (e.star_arg) {
+                out += "*";
+            } else {
+                for (std::size_t i = 0; i < e.args.size(); ++i) {
+                    if (i > 0) out += ", ";
+                    out += to_string(*e.args[i]);
+                }
+            }
+            return out + ")";
+        }
     }
     return "<?>";
 }

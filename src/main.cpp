@@ -168,7 +168,7 @@ int main(int argc, char** argv) {
         return run_sql(buffer.str(), executor) ? 0 : 1;
     }
 
-    std::cout << "MiniDB 0.1.0 - phase 1 (in-memory tables)\n"
+    std::cout << "MiniDB 0.2.0 - phase 2 (aggregates and grouping)\n"
               << "Type .help for shell commands, .exit to quit.\n";
 
     std::string pending;

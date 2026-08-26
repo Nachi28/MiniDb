@@ -220,6 +220,17 @@ SelectStmt Parser::parse_select() {
         stmt.where = parse_expr_bp(0);
     }
 
+    if (match(TokenType::KwGroup)) {
+        expect(TokenType::KwBy, "BY after GROUP");
+        do {
+            stmt.group_by.push_back(parse_expr_bp(0));
+        } while (match(TokenType::Comma));
+    }
+
+    if (match(TokenType::KwHaving)) {
+        stmt.having = parse_expr_bp(0);
+    }
+
     if (match(TokenType::KwOrder)) {
         expect(TokenType::KwBy, "BY after ORDER");
         do {
@@ -287,7 +298,20 @@ ExprPtr Parser::parse_prefix() {
         }
         case TokenType::Identifier: {
             const Token tok = advance();
-            return Expr::make_column(tok.lexeme, tok.pos);
+            if (!check(TokenType::LParen)) return Expr::make_column(tok.lexeme, tok.pos);
+
+            advance();  // '('
+            std::vector<ExprPtr> args;
+            bool star_arg = false;
+            if (match(TokenType::Star)) {
+                star_arg = true;  // COUNT(*)
+            } else if (!check(TokenType::RParen)) {
+                do {
+                    args.push_back(parse_expr_bp(0));
+                } while (match(TokenType::Comma));
+            }
+            expect(TokenType::RParen, "')' to close the argument list");
+            return Expr::make_call(tok.lexeme, std::move(args), star_arg, tok.pos);
         }
         case TokenType::Minus: {
             const Token tok = advance();

@@ -152,3 +152,49 @@ TEST(Parser, ErrorCarriesSourcePosition) {
     }
     REQUIRE(threw);
 }
+
+TEST(Parser, ParsesFunctionCalls) {
+    REQUIRE_EQ(shape("COUNT(*)"), std::string("COUNT(*)"));
+    REQUIRE_EQ(shape("SUM(a)"), std::string("SUM(a)"));
+    REQUIRE_EQ(shape("ROUND(a, 2)"), std::string("ROUND(a, 2)"));
+    REQUIRE_EQ(shape("LENGTH()"), std::string("LENGTH()"));
+}
+
+TEST(Parser, FunctionCallsNestAndCombine) {
+    REQUIRE_EQ(shape("ABS(a) + 1"), std::string("(ABS(a) + 1)"));
+    REQUIRE_EQ(shape("SUM(a * 2)"), std::string("SUM((a * 2))"));
+    REQUIRE_EQ(shape("COALESCE(a, b + 1)"), std::string("COALESCE(a, (b + 1))"));
+}
+
+TEST(Parser, AnIdentifierWithoutParensIsStillAColumn) {
+    Parser parser("count");
+    const ExprPtr e = parser.parse_expression();
+    REQUIRE(e->kind == ExprKind::Column);
+}
+
+TEST(Parser, ParsesGroupByAndHaving) {
+    const Statement stmt = parse_one(
+        "SELECT region, SUM(x) FROM t GROUP BY region, id HAVING SUM(x) > 10 "
+        "ORDER BY region LIMIT 3");
+    const SelectStmt& select = std::get<SelectStmt>(stmt);
+    REQUIRE_EQ(select.group_by.size(), static_cast<std::size_t>(2));
+    REQUIRE_EQ(to_string(*select.group_by[0]), std::string("region"));
+    REQUIRE(select.having != nullptr);
+    REQUIRE_EQ(select.order_by.size(), static_cast<std::size_t>(1));
+    REQUIRE_EQ(select.limit, static_cast<std::int64_t>(3));
+}
+
+TEST(Parser, HavingIsAllowedWithoutGroupBy) {
+    const Statement stmt = parse_one("SELECT COUNT(*) FROM t HAVING COUNT(*) > 1");
+    const SelectStmt& select = std::get<SelectStmt>(stmt);
+    REQUIRE(select.group_by.empty());
+    REQUIRE(select.having != nullptr);
+}
+
+TEST(Parser, ReportsMissingByAfterGroup) {
+    REQUIRE_THROWS_AS(parse_one("SELECT a FROM t GROUP a"), SqlError);
+}
+
+TEST(Parser, ReportsUnclosedArgumentList) {
+    REQUIRE_THROWS_AS(parse_one("SELECT SUM(a FROM t"), SqlError);
+}

@@ -26,7 +26,8 @@ const std::map<std::string, TokenType>& keyword_table() {
         {"by", TokenType::KwBy},           {"asc", TokenType::KwAsc},
         {"desc", TokenType::KwDesc},       {"limit", TokenType::KwLimit},
         {"as", TokenType::KwAs},           {"if", TokenType::KwIf},
-        {"exists", TokenType::KwExists},
+        {"exists", TokenType::KwExists}, {"group", TokenType::KwGroup},
+        {"having", TokenType::KwHaving},
     };
     return table;
 }
@@ -73,6 +74,8 @@ const char* token_type_name(TokenType t) {
         case TokenType::KwAs: return "AS";
         case TokenType::KwIf: return "IF";
         case TokenType::KwExists: return "EXISTS";
+        case TokenType::KwGroup: return "GROUP";
+        case TokenType::KwHaving: return "HAVING";
         case TokenType::Star: return "star";
         case TokenType::Comma: return "comma";
         case TokenType::LParen: return "open paren";

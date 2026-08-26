@@ -97,3 +97,51 @@ for exactly this reason.
 `validate_columns` is the seed of the resolver that phase 5 needs anyway: once
 there is a planner, it will bind names to column indices once rather than
 re-looking them up per row.
+
+## Aggregates are computed per group, then read back as leaves
+
+`SUM(amount) / COUNT(*)` should not need a special case in the expression
+evaluator. So before projecting a group, the executor walks the select list,
+`HAVING` and `ORDER BY`, collects every aggregate *call site* (by `Expr*`
+identity), and computes each one over the group's rows. Those values go into an
+`EvalContext`, and `evaluate` treats an aggregate node as a lookup rather than a
+computation.
+
+The consequence is that aggregates compose with everything else for free:
+arithmetic on them, comparisons in `HAVING`, sorting by one that is not even in
+the select list. The alternative — a separate "aggregate expression" evaluator —
+would have needed its own copy of every operator.
+
+Using pointer identity as the key matters: two textually identical `COUNT(*)`
+call sites are distinct nodes and are computed separately. That is wasteful but
+correct; common-subexpression elimination belongs in the phase 5 planner.
+
+## Grouping and NULL disagree with `=` on purpose
+
+`WHERE k = NULL` matches nothing, but `GROUP BY k` puts every NULL key in the
+same group. Both are correct, and they are different rules. `GroupKeyLess`
+therefore does not reuse `compare()` directly — it treats two NULLs as equal and
+orders NULL before everything else, while `compare()` keeps returning `nullopt`
+for the comparison operators.
+
+Groups are emitted in first-seen order rather than sorted. SQL does not promise
+an order without `ORDER BY`, and first-seen is both deterministic (so tests can
+assert on it) and cheap.
+
+## ORDER BY resolves aliases and positions before analysis
+
+`ORDER BY total` where `total` is a select-list alias, and `ORDER BY 2` meaning
+the second output column, are both resolved to the underlying expression in a
+single pass at the top of `exec_select`. Every later stage — name resolution,
+aggregate collection, the `GROUP BY` legality check, the sort itself — then sees
+a plain expression tree and needs no knowledge that aliases exist.
+
+Doing it the other way round, teaching each stage about aliases, is how this
+gets subtly inconsistent: the sort would honour an alias while the grouping
+check would not.
+
+## Open question: aliases in GROUP BY and HAVING
+
+SQLite accepts `GROUP BY total`; standard SQL does not, because `GROUP BY` is
+logically evaluated before the select list exists. MiniDB currently follows the
+standard. Worth revisiting when differential testing against SQLite starts.

@@ -82,10 +82,14 @@ inline int run_all() {
         }                                                                              \
     } while (false)
 
+// Both operands are copied, not bound by reference. A test may legitimately
+// write REQUIRE_EQ(f().rows[0][0], ...), where the operand is a subobject of a
+// temporary: binding a reference to it does not extend the temporary's
+// lifetime, so the reference would dangle before the comparison runs.
 #define REQUIRE_EQ(actual, expected)                                                   \
     do {                                                                               \
-        const auto& minitest_lhs = (actual);                                           \
-        const auto& minitest_rhs = (expected);                                         \
+        const auto minitest_lhs = (actual);                                           \
+        const auto minitest_rhs = (expected);                                         \
         if (!(minitest_lhs == minitest_rhs)) {                                         \
             std::ostringstream minitest_oss;                                           \
             minitest_oss << "    " << __FILE__ << ":" << __LINE__                       \
