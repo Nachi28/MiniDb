@@ -3,9 +3,12 @@ add_executable(minidb_tests
   test_value.cpp
   test_lexer.cpp
   test_parser.cpp
+  test_key.cpp
   test_record.cpp
   test_pager.cpp
   test_btree.cpp
+  test_index.cpp
+  test_plan.cpp
   test_storage.cpp
   test_wal.cpp
   test_recovery.cpp

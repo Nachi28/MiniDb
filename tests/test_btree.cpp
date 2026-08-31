@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "minidb/diagnostic.hpp"
+#include "minidb/key.hpp"
 #include "test_framework.hpp"
 
 using namespace minidb;
@@ -40,21 +41,40 @@ std::vector<std::uint8_t> payload_for(std::int64_t key, std::size_t length) {
     return bytes;
 }
 
+// The tree stores byte keys; these helpers encode int64 keys the way a table
+// does, so the tests read as though the tree were keyed by rowid.
 void put(BTree& tree, std::int64_t key, std::size_t length) {
     const std::vector<std::uint8_t> bytes = payload_for(key, length);
-    tree.insert(key, bytes.data(), bytes.size());
+    const std::string encoded = encode_rowid(key);
+    tree.insert(Slice(encoded), Slice(bytes.data(), bytes.size()));
 }
 
 bool holds(const BTree& tree, std::int64_t key, std::size_t length) {
     std::vector<std::uint8_t> got;
-    if (!tree.find(key, &got)) return false;
+    const std::string encoded = encode_rowid(key);
+    if (!tree.find(Slice(encoded), &got)) return false;
     return got == payload_for(key, length);
+}
+
+bool present(const BTree& tree, std::int64_t key) {
+    const std::string encoded = encode_rowid(key);
+    return tree.find(Slice(encoded), nullptr);
+}
+
+bool drop(BTree& tree, std::int64_t key) {
+    const std::string encoded = encode_rowid(key);
+    return tree.erase(Slice(encoded));
+}
+
+std::int64_t largest_key(const BTree& tree) {
+    const std::string key = tree.max_key();
+    return key.empty() ? 0 : decode_rowid(Slice(key));
 }
 
 std::vector<std::int64_t> scan_keys(const BTree& tree) {
     std::vector<std::int64_t> keys;
-    tree.scan([&](std::int64_t key, const std::uint8_t*, std::size_t) {
-        keys.push_back(key);
+    tree.scan([&](Slice key, Slice) {
+        keys.push_back(decode_rowid(key));
         return true;
     });
     return keys;
@@ -67,8 +87,8 @@ TEST(BTree, AnEmptyTreeIsASingleLeaf) {
     BTree tree(pager, BTree::create(pager));
     REQUIRE_EQ(tree.size(), static_cast<std::size_t>(0));
     REQUIRE_EQ(tree.height(), static_cast<std::size_t>(1));
-    REQUIRE(!tree.find(1, nullptr));
-    REQUIRE_EQ(tree.max_key(), static_cast<std::int64_t>(0));
+    REQUIRE(!present(tree, 1));
+    REQUIRE_EQ(largest_key(tree), static_cast<std::int64_t>(0));
 }
 
 TEST(BTree, StoresAndFindsOneEntry) {
@@ -76,8 +96,8 @@ TEST(BTree, StoresAndFindsOneEntry) {
     BTree tree(pager, BTree::create(pager));
     put(tree, 42, 16);
     REQUIRE(holds(tree, 42, 16));
-    REQUIRE(!tree.find(41, nullptr));
-    REQUIRE(!tree.find(43, nullptr));
+    REQUIRE(!present(tree, 41));
+    REQUIRE(!present(tree, 43));
     REQUIRE_EQ(tree.size(), static_cast<std::size_t>(1));
 }
 
@@ -86,7 +106,8 @@ TEST(BTree, HandlesZeroLengthPayloads) {
     BTree tree(pager, BTree::create(pager));
     put(tree, 7, 0);
     std::vector<std::uint8_t> got;
-    REQUIRE(tree.find(7, &got));
+    const std::string key = encode_rowid(7);
+    REQUIRE(tree.find(Slice(key), &got));
     REQUIRE_EQ(got.size(), static_cast<std::size_t>(0));
 }
 
@@ -110,7 +131,7 @@ TEST(BTree, KeepsScanOrderAscendingIncludingNegatives) {
     for (std::size_t i = 1; i < seen.size(); ++i) REQUIRE(seen[i - 1] < seen[i]);
     REQUIRE_EQ(seen.front(), static_cast<std::int64_t>(-50));
     REQUIRE_EQ(seen.back(), static_cast<std::int64_t>(100));
-    REQUIRE_EQ(tree.max_key(), static_cast<std::int64_t>(100));
+    REQUIRE_EQ(largest_key(tree), static_cast<std::int64_t>(100));
 }
 
 TEST(BTree, SplitsAndGrowsInHeightOnSequentialInserts) {
@@ -200,7 +221,9 @@ TEST(BTree, StoresPayloadsUpToTheLimitAndRejectsLargerOnes) {
     REQUIRE(holds(tree, 2, BTree::kMaxPayload));
 
     const std::vector<std::uint8_t> huge(BTree::kMaxPayload + 1, 0);
-    REQUIRE_THROWS_AS(tree.insert(3, huge.data(), huge.size()), DbError);
+    const std::string key = encode_rowid(3);
+    REQUIRE_THROWS_AS(tree.insert(Slice(key), Slice(huge.data(), huge.size())),
+                      DbError);
 }
 
 TEST(BTree, EraseRemovesOnlyTheNamedKey) {
@@ -208,9 +231,9 @@ TEST(BTree, EraseRemovesOnlyTheNamedKey) {
     BTree tree(pager, BTree::create(pager));
     for (int i = 1; i <= 500; ++i) put(tree, i, 24);
 
-    REQUIRE(tree.erase(250));
-    REQUIRE(!tree.erase(250));
-    REQUIRE(!tree.find(250, nullptr));
+    REQUIRE(drop(tree, 250));
+    REQUIRE(!drop(tree, 250));
+    REQUIRE(!present(tree, 250));
     REQUIRE_EQ(tree.size(), static_cast<std::size_t>(499));
     REQUIRE(holds(tree, 249, 24));
     REQUIRE(holds(tree, 251, 24));
@@ -221,7 +244,7 @@ TEST(BTree, SpaceFromErasedCellsIsReused) {
     BTree tree(pager, BTree::create(pager));
     for (int round = 0; round < 200; ++round) {
         put(tree, round, 300);
-        if (round > 0) tree.erase(round - 1);
+        if (round > 0) drop(tree, round - 1);
     }
     REQUIRE_EQ(tree.size(), static_cast<std::size_t>(1));
     REQUIRE(holds(tree, 199, 300));
@@ -263,7 +286,7 @@ TEST(BTree, StopsScanningWhenTheVisitorSaysSo) {
     for (int i = 1; i <= 1000; ++i) put(tree, i, 20);
 
     int seen = 0;
-    tree.scan([&](std::int64_t, const std::uint8_t*, std::size_t) {
+    tree.scan([&](Slice, Slice) {
         ++seen;
         return seen < 10;
     });
@@ -308,7 +331,7 @@ TEST(BTree, InsertsInTheMiddleStillSplitEvenly) {
         keys.push_back(key);
         put(tree, key, 40);
     }
-    for (std::int64_t key : keys) REQUIRE(tree.find(key, nullptr));
+    for (std::int64_t key : keys) REQUIRE(present(tree, key));
     const std::vector<std::int64_t> seen = scan_keys(tree);
     for (std::size_t i = 1; i < seen.size(); ++i) REQUIRE(seen[i - 1] < seen[i]);
 }

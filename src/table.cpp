@@ -2,17 +2,19 @@
 
 #include <utility>
 
+#include "minidb/key.hpp"
 #include "minidb/record.hpp"
 #include "minidb/util.hpp"
 
 namespace minidb {
 
 Table::Table(std::string name, std::vector<ColumnDef> columns, Pager& pager, PageId root,
-             std::int64_t next_rowid, std::int64_t catalog_id)
+             std::int64_t next_rowid, std::int64_t row_count, std::int64_t catalog_id)
     : name_(std::move(name)),
       columns_(std::move(columns)),
       tree_(pager, root),
       next_rowid_(next_rowid),
+      row_count_(row_count),
       catalog_id_(catalog_id) {}
 
 int Table::column_index(const std::string& column) const {
@@ -27,22 +29,39 @@ std::int64_t Table::insert(Row row) {
 
     const std::vector<std::uint8_t> payload = encode_row(row);
     const std::int64_t rowid = next_rowid_++;
-    tree_.insert(rowid, payload.data(), payload.size());
-    dirty_ = true;  // both next_rowid_ and possibly the tree root have moved
+    const std::string key = encode_rowid(rowid);
+    tree_.insert(Slice(key), Slice(payload.data(), payload.size()));
+    ++row_count_;
+    dirty_ = true;  // next_rowid_, row_count_ and maybe the root have moved
     return rowid;
 }
 
 void Table::scan(const Visitor& visit) const {
-    tree_.scan([&](std::int64_t rowid, const std::uint8_t* payload, std::size_t size) {
-        Row row = decode_row(payload, size);
+    tree_.scan([&](Slice key, Slice payload) {
+        Row row = decode_row(payload.data, payload.size);
         row.resize(columns_.size());
-        return visit(rowid, row);
+        return visit(decode_rowid(key), row);
     });
 }
 
+bool Table::find(std::int64_t rowid, Row* out) const {
+    const std::string key = encode_rowid(rowid);
+    std::vector<std::uint8_t> payload;
+    if (!tree_.find(Slice(key), &payload)) return false;
+    if (out != nullptr) {
+        *out = decode_row(payload.data(), payload.size());
+        out->resize(columns_.size());
+    }
+    return true;
+}
+
 bool Table::erase(std::int64_t rowid) {
-    const bool removed = tree_.erase(rowid);
-    if (removed) dirty_ = true;
+    const std::string key = encode_rowid(rowid);
+    const bool removed = tree_.erase(Slice(key));
+    if (removed) {
+        --row_count_;
+        dirty_ = true;
+    }
     return removed;
 }
 

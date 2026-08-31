@@ -62,6 +62,13 @@ struct CreateTableStmt {
     bool if_not_exists = false;
 };
 
+struct CreateIndexStmt {
+    std::string name;
+    std::string table;
+    std::string column;
+    bool if_not_exists = false;
+};
+
 struct InsertStmt {
     std::string table;
     std::vector<std::string> columns;          // empty => every column, declared order
@@ -87,6 +94,7 @@ struct SelectStmt {
     ExprPtr having;
     std::vector<OrderTerm> order_by;
     std::int64_t limit = -1;       // -1 => unlimited
+    bool explain = false;          // EXPLAIN prefix: describe, do not run
 };
 
 // BEGIN / COMMIT / ROLLBACK. Outside an explicit transaction every
@@ -98,6 +106,7 @@ struct TransactionStmt {
 };
 
 using Statement =
-    std::variant<CreateTableStmt, InsertStmt, SelectStmt, TransactionStmt>;
+    std::variant<CreateTableStmt, CreateIndexStmt, InsertStmt, SelectStmt,
+                 TransactionStmt>;
 
 }  // namespace minidb

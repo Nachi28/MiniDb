@@ -8,6 +8,7 @@
 
 #include "minidb/ast.hpp"
 #include "minidb/btree.hpp"
+#include "minidb/index.hpp"
 #include "minidb/pager.hpp"
 #include "minidb/table.hpp"
 
@@ -36,6 +37,23 @@ public:
 
     Table& create_table(const std::string& name, std::vector<ColumnDef> columns);
 
+    // Inserts a row and keeps every index on that table in step. Callers go
+    // through here rather than Table::insert so an index cannot fall behind.
+    std::int64_t insert_row(Table& table, Row row);
+
+    Index* find_index(const std::string& name);
+    const Index* find_index(const std::string& name) const;
+
+    // Builds an index and backfills it from the rows already in the table.
+    Index& create_index(const std::string& name, const std::string& table,
+                        const std::string& column);
+
+    // The index on this exact column, if one exists.
+    const Index* index_for(const std::string& table, const std::string& column) const;
+
+    std::vector<std::string> index_names() const;  // sorted
+    std::size_t index_count() const { return indexes_.size(); }
+
     std::vector<std::string> table_names() const;  // sorted
     std::size_t table_count() const { return tables_.size(); }
 
@@ -57,13 +75,16 @@ public:
 private:
     void load_catalog();
     void write_catalog_entry(const Table& table);
+    void write_catalog_entry(const Index& index);
+    std::int64_t next_catalog_id() const;
 
     std::string path_;
     // Declared before the tables so that it outlives them: every Table holds a
     // pointer into this pager.
     std::unique_ptr<Pager> pager_;
     std::unique_ptr<BTree> catalog_;
-    std::map<std::string, Table> tables_;  // key: lowercased name
+    std::map<std::string, Table> tables_;   // key: lowercased name
+    std::map<std::string, Index> indexes_;  // key: lowercased name
     bool in_transaction_ = false;
 };
 

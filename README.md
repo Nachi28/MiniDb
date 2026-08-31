@@ -4,9 +4,9 @@ A relational database written from scratch in C++17 — SQL parser, query planne
 execution engine and storage, with no third-party dependencies.
 
 MiniDB is built in phases, and every phase ends with something that runs.
-**Phases 1-4 are complete:** SQL text is lexed, parsed into an AST, analysed,
-then executed against tables stored in a paged B+tree on disk, behind an LRU
-buffer pool, with a write-ahead log that survives the process being killed.
+**Phases 1-5 are complete:** SQL text is lexed, parsed into an AST, analysed,
+planned against available indexes, then executed over a paged B+tree on disk,
+behind an LRU buffer pool, with a write-ahead log that survives `kill -9`.
 
 ```sql
 minidb> SELECT name, score * 2 AS doubled FROM players ORDER BY score DESC LIMIT 2;
@@ -37,7 +37,7 @@ Then start the shell, or run a script:
 ./build/minidb --db shop.db examples/demo.sql   # run a script
 ```
 
-Shell commands: `.help`, `.tables`, `.schema [table]`, `.exit`.
+Shell commands: `.help`, `.tables`, `.indexes`, `.schema [table]`, `.flush`, `.exit`.
 
 ## What works today
 
@@ -57,6 +57,8 @@ Shell commands: `.help`, `.tables`, `.schema [table]`, `.exit`.
 | Storage | Paged B+tree per table, LRU buffer pool, catalogue persisted in the file |
 | Durability | Write-ahead log with checksummed frames, crash recovery, checkpointing |
 | Transactions | `BEGIN` / `COMMIT` / `ROLLBACK`; autocommit outside an explicit one |
+| Indexes | `CREATE INDEX ... ON t (col)`, on any column type, duplicates allowed |
+| Planning | Cost-based access-path choice, `EXPLAIN` |
 | Diagnostics | Every error carries a line, column and caret |
 
 Identifiers and keywords are case-insensitive. Strings use `''` to escape a
@@ -143,6 +145,57 @@ giving the new row a page of its own instead:
 Same rows, half the file. Random-order inserts still split down the middle;
 `InsertsInTheMiddleStillSplitEvenly` guards that.
 
+## Query planning
+
+```sql
+CREATE INDEX idx_score ON events (score);
+EXPLAIN SELECT * FROM events WHERE score = 40;
+```
+```
+SEEK INDEX idx_score (score = 40)  rows=4 of 600  cost~25 (scan would be 600)
+  FILTER (score = 40)
+```
+
+An index is not automatically better than a scan. Reaching a row through one
+costs a random descent of the table tree, while a scan walks a leaf chain that
+is already in the buffer pool -- so the planner weights index fetches four
+times a scan step and picks whichever is cheaper. On the same 600-row table:
+
+```
+EXPLAIN SELECT * FROM events WHERE kind = 'click';
+SCAN TABLE  rows=600 of 600  cost~600 (scan would be 600)
+```
+
+There *is* an index on `kind`, and the planner rejects it: only four distinct
+kinds exist, so a quarter of the table matches and reaching all of it through
+the index would cost more than reading the table straight through.
+
+### The estimate is measured, not guessed
+
+Selectivity constants are the usual way to make this decision, and they are
+usually wrong: assuming 5% for equality would have predicted 30 rows where the
+truth is 4. Instead the planner **probes the index** and counts, stopping at
+the break-even point -- past `rows / 4` matches the index has already lost, so
+there is no reason to keep counting. The count is therefore either exact or
+large enough not to matter, and it costs at most a quarter of the scan it may
+avoid. `EXPLAIN` prints `rows=` for a measured count and `rows>=` for a floor.
+
+On 200,000 rows, a point query the planner can serve from an index:
+
+| | Time |
+|---|---|
+| Without an index | 86.2 ms |
+| With an index | 0.11 ms |
+
+**757x**, which is simply the difference between reading 200,000 rows and
+reading one.
+
+The safety net is that an index seek is only ever an access path: the `WHERE`
+clause is re-evaluated on every row it produces. An index can hand over extra
+rows but never lose one, which is what makes the lossy numeric key encoding
+safe. A differential test runs 18 query shapes against two identical databases
+-- one indexed, one not -- and requires the answers to match exactly.
+
 ## Durability
 
 Changed pages are appended to a write-ahead log rather than written in place.
@@ -195,11 +248,14 @@ SQL text
    v  AST              include/minidb/ast.hpp
    |  Analysis         src/executor.cpp     name resolution, grouping legality
    v  validated AST
+   |  Planner          src/plan.cpp         access-path choice, index probing
+   v  Plan
    |  Executor         src/executor.cpp     grouping, aggregation, projection
    v  ResultSet
 
    Table              src/table.cpp        rows encoded into a B+tree
-     -> BTree         src/btree.cpp        slotted pages, splits, leaf chain
+   Index              src/index.cpp        (value, rowid) keys in a B+tree
+     -> BTree         src/btree.cpp        byte keys, slotted pages, leaf chain
         -> Pager      src/pager.cpp        LRU buffer pool, pinning, write-back
            -> Wal     src/wal.cpp          checksummed frames, commit markers
            -> file    4 KB pages, little-endian, header on page 0
@@ -215,15 +271,16 @@ adding an operator is a single row in the binding-power table in
 - [x] **Phase 2** - aggregates, `GROUP BY`, `HAVING`, scalar functions, name resolution
 - [x] **Phase 3** - paged B+tree storage, LRU buffer pool, on-disk catalogue
 - [x] **Phase 4** - write-ahead log, crash recovery, transactions
-- [ ] **Phase 5** — cost-based planner with index selection, `EXPLAIN`
+- [x] **Phase 5** - secondary indexes, cost-based access-path planning, `EXPLAIN`
 - [ ] **Phase 6** — TCP wire protocol, CLI client, Docker image
 
 ## Tests
 
-183 test cases run under `ctest`, covering values and NULL ordering, lexing and
+213 test cases run under `ctest`, covering values and NULL ordering, lexing and
 its error cases, parser precedence and associativity, aggregation and grouping
 semantics, record encoding, buffer-pool eviction and pinning, B+tree splits at
 every level, log recovery from torn and corrupted frames, transaction rollback,
+key-encoding order preservation, index seeks and ranges, planner choices,
 and persistence across reopening.
 
 A second CTest target, `minidb_crash_recovery`, repeatedly spawns a writer

@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cstring>
-#include <string>
 
 #include "minidb/diagnostic.hpp"
 
@@ -15,6 +14,9 @@ namespace {
 //   4  uint16  heap start (cells occupy [heap_start, kPageSize))
 //   8  uint32  leaf: next leaf page;  internal: rightmost child
 // followed by `cell count` 2-byte slot offsets, sorted by key.
+//
+// Leaf cell:      uint16 key length | key | uint16 payload length | payload
+// Internal cell:  uint16 key length | key | uint32 child
 constexpr std::size_t kNodeHeader = 12;
 constexpr std::size_t kOffType = 0;
 constexpr std::size_t kOffCellCount = 2;
@@ -23,9 +25,7 @@ constexpr std::size_t kOffExtra = 8;
 constexpr std::uint8_t kLeaf = 1;
 constexpr std::uint8_t kInternal = 2;
 
-constexpr std::size_t kInternalCellSize = 12;  // int64 key + uint32 child
-
-// A view over one page's bytes. Construct it from mutable_data() to change the
+// A view over one page's bytes. Construct from mutable_data() to change the
 // node, or from read_data() to read it.
 class Node {
 public:
@@ -44,35 +44,40 @@ public:
     PageId extra() const { return get_u32(data_ + kOffExtra); }
     void set_extra(PageId id) { put_u32(data_ + kOffExtra, id); }
 
-    std::uint8_t* cell(std::size_t i) { return data_ + slot(i); }
-    const std::uint8_t* cell(std::size_t i) const { return data_ + slot(i); }
+    const std::uint8_t* cell(std::size_t i) const { return data_ + get_slot(i); }
+    std::uint8_t* cell(std::size_t i) { return data_ + get_slot(i); }
 
-    std::int64_t key_at(std::size_t i) const { return get_i64(cell(i)); }
-
-    // Leaf cell: int64 key | uint16 length | payload
-    const std::uint8_t* payload_at(std::size_t i, std::size_t* length) const {
+    Slice key_at(std::size_t i) const {
         const std::uint8_t* c = cell(i);
-        *length = get_u16(c + 8);
-        return c + 10;
+        return Slice(c + 2, get_u16(c));
     }
 
-    // Internal cell: int64 key | uint32 child
-    PageId child_at(std::size_t i) const { return get_u32(cell(i) + 8); }
+    Slice payload_at(std::size_t i) const {
+        const std::uint8_t* c = cell(i);
+        const std::size_t key_len = get_u16(c);
+        return Slice(c + 2 + key_len + 2, get_u16(c + 2 + key_len));
+    }
+
+    PageId child_at(std::size_t i) const {
+        const std::uint8_t* c = cell(i);
+        return get_u32(c + 2 + get_u16(c));
+    }
 
     std::size_t cell_size(std::size_t i) const {
-        if (!is_leaf()) return kInternalCellSize;
-        std::size_t length = 0;
-        payload_at(i, &length);
-        return 10 + length;
+        const std::uint8_t* c = cell(i);
+        const std::size_t key_len = get_u16(c);
+        if (!is_leaf()) return 2 + key_len + 4;
+        return 2 + key_len + 2 + get_u16(c + 2 + key_len);
     }
 
-    // First index whose key is >= `key`, i.e. the insertion point.
-    std::size_t lower_bound(std::int64_t key) const {
+    // First index whose key is >= `key`: where an equal key lives, or where a
+    // new one belongs.
+    std::size_t lower_bound(Slice key) const {
         std::size_t lo = 0;
         std::size_t hi = count();
         while (lo < hi) {
             const std::size_t mid = lo + (hi - lo) / 2;
-            if (key_at(mid) < key) {
+            if (compare_slices(key_at(mid), key) < 0) {
                 lo = mid + 1;
             } else {
                 hi = mid;
@@ -81,15 +86,14 @@ public:
         return lo;
     }
 
-    // First index whose key is strictly greater than `key`. Used to pick a
-    // child: cell i covers keys < key_at(i), so a key equal to a separator
-    // belongs to the right of it.
-    std::size_t upper_bound(std::int64_t key) const {
+    // First index whose key is strictly greater. Used to pick a child: cell i
+    // covers keys < key_at(i), so a key equal to a separator lives to its right.
+    std::size_t upper_bound(Slice key) const {
         std::size_t lo = 0;
         std::size_t hi = count();
         while (lo < hi) {
             const std::size_t mid = lo + (hi - lo) / 2;
-            if (key_at(mid) <= key) {
+            if (compare_slices(key_at(mid), key) <= 0) {
                 lo = mid + 1;
             } else {
                 hi = mid;
@@ -108,8 +112,7 @@ public:
         return kPageSize - slots_end() - used;
     }
 
-    // Rewrites the heap so that the free space left by removed cells becomes
-    // usable again. Cells move; slot offsets are rewritten to match.
+    // Rewrites the heap so the space left by removed cells becomes usable again.
     void compact() {
         std::vector<std::uint8_t> buffer;
         std::vector<std::size_t> sizes(count());
@@ -129,13 +132,8 @@ public:
         put_u16(data_ + kOffHeapStart, static_cast<std::uint16_t>(heap));
     }
 
-    bool fits(std::size_t cell_bytes) const {
-        return contiguous_free() >= cell_bytes + 2 ||
-               total_free() >= cell_bytes + 2;
-    }
-
     // Inserts `bytes` as cell number `index`, shifting later slots right.
-    // Returns false when the node is genuinely full.
+    // False when the node is genuinely full.
     bool insert_cell(std::size_t index, const std::uint8_t* bytes, std::size_t size) {
         if (contiguous_free() < size + 2) {
             if (total_free() < size + 2) return false;
@@ -159,10 +157,6 @@ public:
         put_u16(data_ + kOffCellCount, static_cast<std::uint16_t>(n - 1));
     }
 
-    void set_count(std::size_t n) {
-        put_u16(data_ + kOffCellCount, static_cast<std::uint16_t>(n));
-    }
-
     std::uint16_t get_slot(std::size_t i) const {
         return get_u16(data_ + kNodeHeader + 2 * i);
     }
@@ -171,26 +165,29 @@ public:
     }
 
 private:
-    std::size_t slot(std::size_t i) const { return get_slot(i); }
-
     std::uint8_t* data_;
 };
 
-std::vector<std::uint8_t> make_leaf_cell(std::int64_t key, const std::uint8_t* payload,
-                                         std::size_t size) {
-    std::vector<std::uint8_t> cell(10 + size);
-    put_i64(cell.data(), key);
-    put_u16(cell.data() + 8, static_cast<std::uint16_t>(size));
-    if (size > 0) std::memcpy(cell.data() + 10, payload, size);
+std::vector<std::uint8_t> make_leaf_cell(Slice key, Slice payload) {
+    std::vector<std::uint8_t> cell(2 + key.size + 2 + payload.size);
+    put_u16(cell.data(), static_cast<std::uint16_t>(key.size));
+    if (key.size > 0) std::memcpy(cell.data() + 2, key.data, key.size);
+    put_u16(cell.data() + 2 + key.size, static_cast<std::uint16_t>(payload.size));
+    if (payload.size > 0) {
+        std::memcpy(cell.data() + 2 + key.size + 2, payload.data, payload.size);
+    }
     return cell;
 }
 
-std::vector<std::uint8_t> make_internal_cell(std::int64_t key, PageId child) {
-    std::vector<std::uint8_t> cell(kInternalCellSize);
-    put_i64(cell.data(), key);
-    put_u32(cell.data() + 8, child);
+std::vector<std::uint8_t> make_internal_cell(Slice key, PageId child) {
+    std::vector<std::uint8_t> cell(2 + key.size + 4);
+    put_u16(cell.data(), static_cast<std::uint16_t>(key.size));
+    if (key.size > 0) std::memcpy(cell.data() + 2, key.data, key.size);
+    put_u32(cell.data() + 2 + key.size, child);
     return cell;
 }
+
+Slice slice_of(const std::string& s) { return Slice(s); }
 
 }  // namespace
 
@@ -205,7 +202,7 @@ BTree::BTree(Pager& pager, PageId root) : pager_(&pager), root_(root) {
     if (root_ == kInvalidPage) throw DbError("B-tree root page is not set");
 }
 
-PageId BTree::find_leaf(std::int64_t key) const {
+PageId BTree::find_leaf(Slice key) const {
     PageId current = root_;
     for (;;) {
         PageGuard guard = pager_->fetch(current);
@@ -226,24 +223,23 @@ PageId BTree::leftmost_leaf() const {
     }
 }
 
-bool BTree::find(std::int64_t key, std::vector<std::uint8_t>* out) const {
+bool BTree::find(Slice key, std::vector<std::uint8_t>* out) const {
     PageGuard guard = pager_->fetch(find_leaf(key));
     const Node leaf(guard.read_data());
     const std::size_t index = leaf.lower_bound(key);
-    if (index >= leaf.count() || leaf.key_at(index) != key) return false;
+    if (index >= leaf.count() || compare_slices(leaf.key_at(index), key) != 0) return false;
     if (out != nullptr) {
-        std::size_t length = 0;
-        const std::uint8_t* payload = leaf.payload_at(index, &length);
-        out->assign(payload, payload + length);
+        const Slice payload = leaf.payload_at(index);
+        out->assign(payload.data, payload.data + payload.size);
     }
     return true;
 }
 
-bool BTree::erase(std::int64_t key) {
+bool BTree::erase(Slice key) {
     PageGuard guard = pager_->fetch(find_leaf(key));
     Node leaf(guard.read_data());
     const std::size_t index = leaf.lower_bound(key);
-    if (index >= leaf.count() || leaf.key_at(index) != key) return false;
+    if (index >= leaf.count() || compare_slices(leaf.key_at(index), key) != 0) return false;
     Node(guard.mutable_data()).remove_cell(index);
     return true;
 }
@@ -254,9 +250,27 @@ void BTree::scan(const Visitor& visit) const {
         PageGuard guard = pager_->fetch(current);
         const Node leaf(guard.read_data());
         for (std::size_t i = 0; i < leaf.count(); ++i) {
-            std::size_t length = 0;
-            const std::uint8_t* payload = leaf.payload_at(i, &length);
-            if (!visit(leaf.key_at(i), payload, length)) return;
+            if (!visit(leaf.key_at(i), leaf.payload_at(i))) return;
+        }
+        current = leaf.extra();
+    }
+}
+
+// Seeking to the first key >= start and then following the leaf chain is what
+// makes an index range scan cost only the rows it actually returns.
+void BTree::scan_from(Slice start, const Visitor& visit) const {
+    PageId current = find_leaf(start);
+    bool first = true;
+    while (current != kInvalidPage) {
+        PageGuard guard = pager_->fetch(current);
+        const Node leaf(guard.read_data());
+        std::size_t i = 0;
+        if (first) {
+            i = leaf.lower_bound(start);
+            first = false;
+        }
+        for (; i < leaf.count(); ++i) {
+            if (!visit(leaf.key_at(i), leaf.payload_at(i))) return;
         }
         current = leaf.extra();
     }
@@ -264,7 +278,7 @@ void BTree::scan(const Visitor& visit) const {
 
 std::size_t BTree::size() const {
     std::size_t n = 0;
-    scan([&](std::int64_t, const std::uint8_t*, std::size_t) {
+    scan([&](Slice, Slice) {
         ++n;
         return true;
     });
@@ -283,24 +297,26 @@ std::size_t BTree::height() const {
     }
 }
 
-std::int64_t BTree::max_key() const {
-    std::int64_t largest = 0;
-    bool seen = false;
-    scan([&](std::int64_t key, const std::uint8_t*, std::size_t) {
-        largest = key;  // the scan is in ascending order, so the last wins
-        seen = true;
+std::string BTree::max_key() const {
+    std::string largest;
+    scan([&](Slice key, Slice) {
+        largest = key.to_string();  // ascending order, so the last one wins
         return true;
     });
-    return seen ? largest : 0;
+    return largest;
 }
 
-void BTree::insert(std::int64_t key, const std::uint8_t* payload, std::size_t size) {
-    if (size > kMaxPayload) {
-        throw DbError("row is too large to store: " + std::to_string(size) +
+void BTree::insert(Slice key, Slice payload) {
+    if (key.size > kMaxKey) {
+        throw DbError("key is too large to index: " + std::to_string(key.size) +
+                      " bytes, limit is " + std::to_string(kMaxKey));
+    }
+    if (payload.size > kMaxPayload) {
+        throw DbError("row is too large to store: " + std::to_string(payload.size) +
                       " bytes, limit is " + std::to_string(kMaxPayload));
     }
 
-    const Split split = insert_into(root_, key, payload, size);
+    const Split split = insert_into(root_, key, payload);
     if (!split.happened) return;
 
     // The root split, so the tree gains a level. This is the only way a B+tree
@@ -309,55 +325,53 @@ void BTree::insert(std::int64_t key, const std::uint8_t* payload, std::size_t si
     PageGuard guard = pager_->allocate(&new_root);
     Node::init(guard.mutable_data(), /*leaf=*/false);
     Node node(guard.mutable_data());
-    const std::vector<std::uint8_t> cell = make_internal_cell(split.key, root_);
+    const std::vector<std::uint8_t> cell = make_internal_cell(slice_of(split.key), root_);
     node.insert_cell(0, cell.data(), cell.size());
     node.set_extra(split.right);
     root_ = new_root;
 }
 
-BTree::Split BTree::insert_into(PageId page_id, std::int64_t key,
-                                const std::uint8_t* payload, std::size_t size) {
+BTree::Split BTree::insert_into(PageId page_id, Slice key, Slice payload) {
     PageGuard guard = pager_->fetch(page_id);
     const std::size_t capacity = kPageSize - kNodeHeader;
 
     if (Node(guard.read_data()).is_leaf()) {
         Node node(guard.mutable_data());
         const std::size_t index = node.lower_bound(key);
-        if (index < node.count() && node.key_at(index) == key) {
+        if (index < node.count() && compare_slices(node.key_at(index), key) == 0) {
             node.remove_cell(index);  // upsert: the old payload goes first
         }
 
-        const std::vector<std::uint8_t> cell = make_leaf_cell(key, payload, size);
+        const std::vector<std::uint8_t> cell = make_leaf_cell(key, payload);
         if (node.insert_cell(index, cell.data(), cell.size())) return Split{};
 
         // The leaf is full. Rebuild its contents plus the new entry, then divide
         // them between two pages.
         struct Entry {
-            std::int64_t key;
+            std::string key;
             std::vector<std::uint8_t> cell;
         };
         std::vector<Entry> entries;
         entries.reserve(node.count() + 1);
         for (std::size_t i = 0; i < node.count(); ++i) {
             const std::uint8_t* c = node.cell(i);
-            entries.push_back(
-                Entry{node.key_at(i), std::vector<std::uint8_t>(c, c + node.cell_size(i))});
+            entries.push_back(Entry{node.key_at(i).to_string(),
+                                    std::vector<std::uint8_t>(c, c + node.cell_size(i))});
         }
         entries.insert(entries.begin() + static_cast<std::ptrdiff_t>(index),
-                       Entry{key, cell});
+                       Entry{key.to_string(), cell});
 
-        // Pick the most balanced split point at which both halves actually fit.
-        // Cells vary in size, so halving by count is not enough.
         std::vector<std::size_t> sizes(entries.size());
         std::size_t total = 0;
         for (std::size_t i = 0; i < entries.size(); ++i) {
             sizes[i] = entries[i].cell.size() + 2;  // the cell plus its slot
             total += sizes[i];
         }
+
         std::size_t at = 0;
         if (index + 1 == entries.size()) {
-            // The new key is the largest, so this is an append -- the usual
-            // shape for rowid inserts. A balanced split would leave every leaf
+            // The new key is the largest, so this is an append -- the usual shape
+            // for rowid inserts. A balanced split would leave every leaf
             // permanently half empty, so give the new entry a page of its own
             // and leave the full page full.
             at = entries.size() - 1;
@@ -409,17 +423,17 @@ BTree::Split BTree::insert_into(PageId page_id, std::int64_t key,
     const std::size_t index = node.upper_bound(key);
     const PageId child = index < node.count() ? node.child_at(index) : node.extra();
 
-    const Split below = insert_into(child, key, payload, size);
+    const Split below = insert_into(child, key, payload);
     if (!below.happened) return Split{};
 
     struct Separator {
-        std::int64_t key;
+        std::string key;
         PageId child;
     };
     std::vector<Separator> seps;
     seps.reserve(node.count() + 1);
     for (std::size_t i = 0; i < node.count(); ++i) {
-        seps.push_back(Separator{node.key_at(i), node.child_at(i)});
+        seps.push_back(Separator{node.key_at(i).to_string(), node.child_at(i)});
     }
     PageId rightmost = node.extra();
 
@@ -437,13 +451,17 @@ BTree::Split BTree::insert_into(PageId page_id, std::int64_t key,
     const auto write_separators = [](Node& target, const std::vector<Separator>& list,
                                      std::size_t from, std::size_t to, PageId last) {
         for (std::size_t i = from; i < to; ++i) {
-            const std::vector<std::uint8_t> c = make_internal_cell(list[i].key, list[i].child);
+            const std::vector<std::uint8_t> c =
+                make_internal_cell(slice_of(list[i].key), list[i].child);
             target.insert_cell(i - from, c.data(), c.size());
         }
         target.set_extra(last);
     };
 
-    if (seps.size() * (kInternalCellSize + 2) <= capacity) {
+    std::size_t needed = 0;
+    for (const Separator& sep : seps) needed += 2 + sep.key.size() + 4 + 2;
+
+    if (needed <= capacity) {
         Node::init(guard.mutable_data(), /*leaf=*/false);
         Node rebuilt(guard.mutable_data());
         write_separators(rebuilt, seps, 0, seps.size(), rightmost);
@@ -453,7 +471,7 @@ BTree::Split BTree::insert_into(PageId page_id, std::int64_t key,
     // Split the internal node. Unlike a leaf split the middle separator moves
     // up rather than being copied, because internal keys are only signposts.
     const std::size_t mid = seps.size() / 2;
-    const std::int64_t promoted = seps[mid].key;
+    const std::string promoted = seps[mid].key;
 
     PageId right_id = kInvalidPage;
     PageGuard right_guard = pager_->allocate(&right_id);

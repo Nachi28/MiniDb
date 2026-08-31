@@ -14,7 +14,9 @@ const char kMagic[kMagicSize + 1] = "MINIDB";
 constexpr std::size_t kOffVersion = 6;
 constexpr std::size_t kOffPageCount = 8;
 constexpr std::size_t kOffCatalogRoot = 12;
-constexpr std::uint8_t kFormatVersion = 1;
+// Bumped when the catalogue gained an entry-kind field and a row count, so an
+// older file is rejected rather than misread.
+constexpr std::uint8_t kFormatVersion = 2;
 
 }  // namespace
 

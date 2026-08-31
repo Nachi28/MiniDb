@@ -281,3 +281,81 @@ the same as moving them onto the disk. Commit calls `_commit` on Windows and
 `fsync` elsewhere. Without that, a power cut loses committed transactions that
 the process was told were durable -- and the crash test, which kills a process
 but not the OS, would never notice the difference.
+
+## One B+tree, two jobs, because the keys do the work
+
+Phase 5 needed secondary indexes, and an index cannot be keyed by an int64: two
+rows can share a value, so the key has to be (value, rowid), and values are not
+integers. Rather than write a second tree, the B+tree was generalised to
+byte-string keys ordered by plain `memcmp`, and the *encodings* were made to
+carry the semantics.
+
+- A table tree is keyed by `encode_rowid(rowid)`: eight big-endian bytes with
+  the sign bit flipped, so integer order survives exactly.
+- An index tree is keyed by `encode_value(v) + encode_rowid(rowid)`, so
+  duplicates coexist and each value's rows form one contiguous, seekable run.
+
+A leading tag byte separates the storage classes, which makes NULL < numbers <
+text fall straight out of the byte comparison rather than needing a special
+case. Text escapes its 0x00 bytes as `00 FF` and terminates with `00 00`, so a
+value can contain nulls without colliding with the rowid that follows it.
+
+Numbers encode through the standard IEEE-754 trick: flip every bit of a
+negative, set the top bit of a positive, then store big-endian. Integers go
+through `double`, so two integers more than 2^53 apart can collide -- which is
+safe only because of the rule in the next section.
+
+## An index is an access path, never an answer
+
+Every row an index produces is still run through the `WHERE` clause. That looks
+redundant, and it is what makes several other decisions safe: the lossy numeric
+key encoding can only ever yield extra candidates, never lose one, and a
+predicate the index only partially covers still gets fully enforced.
+
+The test that matters here is differential: eighteen query shapes run against
+two databases holding identical rows, one indexed and one not, and the answers
+must match as multisets. Sorted comparison, because an index scan returns rows
+in index order rather than rowid order and SQL promises no order without
+`ORDER BY`.
+
+## The planner probes instead of guessing
+
+The textbook approach is fixed selectivity constants -- 5% for equality, 30% for
+a range. Measured on the demo table, 5% predicted 30 matching rows where the
+real answer was 4, which is the difference between choosing an index and
+refusing it.
+
+So the planner counts. `Index::count_equal` and `count_range` walk the index and
+return the number of matches, giving up once they reach `rows / 4` -- the point
+at which four-times-a-scan-step random fetches already exceed the cost of just
+reading the table, so any larger answer leads to the same decision. The count is
+therefore either exact or provably irrelevant, and the probe costs at most a
+quarter of the scan it might avoid.
+
+`EXPLAIN` distinguishes the two: `rows=` is a measured count, `rows>=` is a
+floor from a probe that stopped early.
+
+## Why the cost model has a random-fetch weight at all
+
+Without one, any usable index always wins, which is wrong often enough to
+matter. A scan walks a leaf chain that is largely resident in the buffer pool;
+an index lookup descends the table tree once per row. Weighting an index fetch
+at four scan steps is a rough number, but having *a* number is what lets the
+planner reject an index on a column with four distinct values while accepting
+one on a column with six hundred.
+
+## Only top-level ANDs are usable
+
+Conjuncts are collected by walking down through `AND` nodes. An `OR` stops the
+walk: a row that fails one side may still qualify through the other, so no
+single index range covers the predicate and the scan is the only correct path.
+Two constraints on the same indexed column are folded into one range with both
+ends, which is both cheaper and a tighter estimate.
+
+## Statistics live in the catalogue
+
+The planner needs a row count, and counting rows per query would defeat the
+purpose. `Table` maintains `row_count_` incrementally and it is persisted as a
+catalogue field, alongside the root page and the rowid counter. That is the
+first genuine *statistic* in the system; histograms, which would let ranges be
+estimated without probing, would go in the same place.

@@ -30,7 +30,8 @@ const std::map<std::string, TokenType>& keyword_table() {
         {"having", TokenType::KwHaving},   {"begin", TokenType::KwBegin},
         {"commit", TokenType::KwCommit},   {"rollback", TokenType::KwRollback},
         {"transaction", TokenType::KwTransaction},
-        {"end", TokenType::KwCommit},
+        {"end", TokenType::KwCommit},       {"index", TokenType::KwIndex},
+        {"on", TokenType::KwOn},            {"explain", TokenType::KwExplain},
     };
     return table;
 }
@@ -83,6 +84,9 @@ const char* token_type_name(TokenType t) {
         case TokenType::KwCommit: return "COMMIT";
         case TokenType::KwRollback: return "ROLLBACK";
         case TokenType::KwTransaction: return "TRANSACTION";
+        case TokenType::KwIndex: return "INDEX";
+        case TokenType::KwOn: return "ON";
+        case TokenType::KwExplain: return "EXPLAIN";
         case TokenType::Star: return "star";
         case TokenType::Comma: return "comma";
         case TokenType::LParen: return "open paren";

@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "minidb/diagnostic.hpp"
+#include "minidb/plan.hpp"
 #include "minidb/util.hpp"
 
 namespace minidb {
@@ -488,6 +489,9 @@ ResultSet Executor::execute(const Statement& stmt) {
     if (std::holds_alternative<CreateTableStmt>(stmt)) {
         return exec_create(std::get<CreateTableStmt>(stmt));
     }
+    if (std::holds_alternative<CreateIndexStmt>(stmt)) {
+        return exec_create_index(std::get<CreateIndexStmt>(stmt));
+    }
     if (std::holds_alternative<InsertStmt>(stmt)) {
         return exec_insert(std::get<InsertStmt>(stmt));
     }
@@ -541,6 +545,24 @@ ResultSet Executor::exec_create(const CreateTableStmt& stmt) {
     return result;
 }
 
+ResultSet Executor::exec_create_index(const CreateIndexStmt& stmt) {
+    ResultSet result;
+
+    if (db_.find_index(stmt.name) != nullptr) {
+        if (stmt.if_not_exists) {
+            result.message = "index " + stmt.name + " already exists, nothing to do";
+            return result;
+        }
+        throw DbError("index " + stmt.name + " already exists");
+    }
+
+    const Index& index = db_.create_index(stmt.name, stmt.table, stmt.column);
+    db_.autocommit();
+    result.message = "index " + index.name() + " created on " + index.table() +
+                     "(" + index.column() + ")";
+    return result;
+}
+
 ResultSet Executor::exec_insert(const InsertStmt& stmt) {
     Table* table = db_.find_table(stmt.table);
     if (table == nullptr) throw DbError("no such table: " + stmt.table);
@@ -576,7 +598,7 @@ ResultSet Executor::exec_insert(const InsertStmt& stmt) {
             const ColumnDef& column = table->columns()[targets[i]];
             row[targets[i]] = coerce(v, column.type, column.name);
         }
-        table->insert(std::move(row));
+        db_.insert_row(*table, std::move(row));  // keeps indexes in step
         ++inserted;
     }
 
@@ -646,18 +668,90 @@ ResultSet Executor::exec_select(const SelectStmt& stmt) {
 
     static const Row kNoRow;  // stands in for the single row of a FROM-less SELECT
 
-    // 3. Scan and filter. Rows are decoded out of the B+tree one at a time and
-    //    only the survivors are kept, so a selective WHERE never materialises
-    //    the whole table. `matched` points into `scanned`, which is not touched
-    //    again once built.
+    // 3. Choose an access path, then run it.
+    Plan plan;
+    if (table != nullptr) plan = choose_plan(db_, *table, stmt.where.get());
+
+    if (stmt.explain) {
+        ResultSet result;
+        result.is_query = true;
+        result.column_names.push_back("plan");
+
+        const auto step = [&](const std::string& text) {
+            Row row;
+            row.push_back(Value::text(text));
+            result.rows.push_back(std::move(row));
+        };
+
+        step(table != nullptr ? plan.describe() : "CONSTANT ROW (no FROM clause)");
+        if (stmt.where) {
+            step("  FILTER " + to_string(*stmt.where));
+        }
+        if (!stmt.group_by.empty()) {
+            std::string text = "  GROUP BY ";
+            for (std::size_t i = 0; i < stmt.group_by.size(); ++i) {
+                if (i > 0) text += ", ";
+                text += to_string(*stmt.group_by[i]);
+            }
+            step(text);
+        }
+        if (!aggregates.empty()) {
+            step("  AGGREGATE " + std::to_string(aggregates.size()) + " call(s)");
+        }
+        if (stmt.having) {
+            step("  HAVING " + to_string(*stmt.having));
+        }
+        if (!order_exprs.empty()) {
+            std::string text = "  SORT BY ";
+            for (std::size_t i = 0; i < order_exprs.size(); ++i) {
+                if (i > 0) text += ", ";
+                text += to_string(*order_exprs[i]);
+                if (stmt.order_by[i].descending) text += " DESC";
+            }
+            step(text);
+        }
+        if (stmt.limit >= 0) {
+            step("  LIMIT " + std::to_string(stmt.limit));
+        }
+        return result;
+    }
+
+    // Rows are decoded one at a time and only the survivors are kept, so a
+    // selective WHERE never materialises the whole table. `matched` points
+    // into `scanned`, which is not touched again once built.
+    //
+    // The predicate is re-evaluated on every candidate even when an index
+    // produced it. That is what makes the lossy numeric key encoding safe: an
+    // index can only ever hand over extra rows, never miss one.
     std::vector<Row> scanned;
     std::vector<const Row*> matched;
     if (table != nullptr) {
-        table->scan([&](std::int64_t, Row& row) {
-            if (stmt.where && !is_true(evaluate(*stmt.where, table, &row))) return true;
+        const auto keep = [&](Row& row) {
+            if (stmt.where && !is_true(evaluate(*stmt.where, table, &row))) return;
             scanned.push_back(std::move(row));
-            return true;
-        });
+        };
+
+        if (plan.path == AccessPath::FullScan) {
+            table->scan([&](std::int64_t, Row& row) {
+                keep(row);
+                return true;
+            });
+        } else {
+            const auto fetch = [&](std::int64_t rowid) {
+                Row row;
+                if (table->find(rowid, &row)) keep(row);
+                return true;
+            };
+            if (plan.path == AccessPath::IndexEqual) {
+                plan.index->seek_equal(plan.equal_value, fetch);
+            } else {
+                plan.index->seek_range(plan.has_low ? &plan.low : nullptr,
+                                       plan.low_inclusive,
+                                       plan.has_high ? &plan.high : nullptr,
+                                       plan.high_inclusive, fetch);
+            }
+        }
+
         matched.reserve(scanned.size());
         for (const Row& row : scanned) matched.push_back(&row);
     } else if (!stmt.where || is_true(evaluate(*stmt.where, nullptr, nullptr))) {

@@ -13,6 +13,7 @@
 
 #include "minidb/database.hpp"
 #include "minidb/executor.hpp"
+#include "minidb/key.hpp"
 #include "minidb/parser.hpp"
 
 using namespace minidb;
@@ -117,7 +118,8 @@ int main(int argc, char** argv) {
         for (std::int64_t i = 0; i < probes; ++i) {
             const std::int64_t key =
                 static_cast<std::int64_t>(rng.next() % static_cast<std::uint64_t>(rows)) + 1;
-            if (tree.find(key, &payload)) ++found;
+            const std::string encoded = encode_rowid(key);
+            if (tree.find(Slice(encoded), &payload)) ++found;
         }
         report("point lookup (B+tree)", found, seconds_since(start), "gets");
     }
@@ -138,6 +140,27 @@ int main(int argc, char** argv) {
         const ResultSet r = run_sql(db, "SELECT COUNT(*) FROM bench WHERE score > 1000.0");
         report("SELECT with WHERE (SQL)", rows, seconds_since(start), "rows");
         std::cout << "    -> " << r.rows[0][0].to_string() << " matched\n";
+    }
+
+    // 7. The same selective query with and without an index on the column.
+    {
+        const std::string selective = "SELECT COUNT(*) FROM bench WHERE id = " +
+                                      std::to_string(rows / 2) + ";";
+        Clock::time_point start = Clock::now();
+        run_sql(db, selective);
+        const double without = seconds_since(start);
+
+        run_sql(db, "CREATE INDEX idx_id ON bench (id);");
+        start = Clock::now();
+        run_sql(db, selective);
+        const double with = seconds_since(start);
+
+        std::cout << "  selective query" << "\n"
+                  << "    without index      " << std::fixed << std::setprecision(4)
+                  << without * 1000.0 << " ms" << "\n"
+                  << "    with index         " << with * 1000.0 << " ms"
+                  << "   (" << std::setprecision(1)
+                  << (with > 0.0 ? without / with : 0.0) << "x faster)" << "\n";
     }
 
     std::cout << "\n  pages allocated      " << db.pager().page_count() << "\n"

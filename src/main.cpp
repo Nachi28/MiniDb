@@ -103,6 +103,7 @@ void print_help() {
     std::cout << "MiniDB shell commands:\n"
               << "  .help              show this message\n"
               << "  .tables            list tables\n"
+              << "  .indexes           list indexes\n"
               << "  .schema [table]    show column definitions\n"
               << "  .flush             write everything to disk now\n"
               << "  .exit / .quit      leave the shell\n"
@@ -143,6 +144,18 @@ bool handle_dot_command(const std::string& line, Database& db, bool& should_exit
             std::cout << "(no tables)\n";
         } else {
             for (const std::string& name : names) std::cout << name << "\n";
+        }
+    } else if (command == ".indexes") {
+        const std::vector<std::string> names = db.index_names();
+        if (names.empty()) {
+            std::cout << "(no indexes)\n";
+        } else {
+            for (const std::string& name : names) {
+                const Index* index = db.find_index(name);
+                if (index == nullptr) continue;
+                std::cout << name << " on " << index->table() << "("
+                          << index->column() << ")\n";
+            }
         }
     } else if (command == ".schema") {
         print_schema(db, argument);
@@ -192,7 +205,7 @@ int main(int argc, char** argv) {
         return ok ? 0 : 1;
     }
 
-    std::cout << "MiniDB 0.4.0 - phase 4 (write-ahead log)\n"
+    std::cout << "MiniDB 0.5.0 - phase 5 (query planner)\n"
               << "database: " << db.path() << "\n"
               << "Type .help for shell commands, .exit to quit.\n";
 

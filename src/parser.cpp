@@ -116,9 +116,16 @@ std::vector<Statement> Parser::parse_program() {
 }
 
 Statement Parser::parse_statement() {
-    if (check(TokenType::KwCreate)) return Statement(parse_create_table());
+    if (check(TokenType::KwCreate)) return parse_create();
     if (check(TokenType::KwInsert)) return Statement(parse_insert());
     if (check(TokenType::KwSelect)) return Statement(parse_select());
+
+    if (check(TokenType::KwExplain)) {
+        advance();
+        SelectStmt select = parse_select();
+        select.explain = true;
+        return Statement(std::move(select));
+    }
 
     if (check(TokenType::KwBegin) || check(TokenType::KwCommit) ||
         check(TokenType::KwRollback)) {
@@ -131,11 +138,36 @@ Statement Parser::parse_statement() {
         return Statement(stmt);
     }
 
-    fail("expected CREATE, INSERT, SELECT, BEGIN, COMMIT or ROLLBACK, found " +
+    fail("expected CREATE, INSERT, SELECT, EXPLAIN, BEGIN, COMMIT or ROLLBACK, found " +
          describe_token(current()));
 }
 
 ExprPtr Parser::parse_expression() { return parse_expr_bp(0); }
+
+// CREATE splits two ways, so the keyword after it decides the statement.
+Statement Parser::parse_create() {
+    if (peek(1).type == TokenType::KwIndex) return Statement(parse_create_index());
+    return Statement(parse_create_table());
+}
+
+CreateIndexStmt Parser::parse_create_index() {
+    expect(TokenType::KwCreate, "CREATE");
+    expect(TokenType::KwIndex, "INDEX after CREATE");
+
+    CreateIndexStmt stmt;
+    if (match(TokenType::KwIf)) {
+        expect(TokenType::KwNot, "NOT in IF NOT EXISTS");
+        expect(TokenType::KwExists, "EXISTS in IF NOT EXISTS");
+        stmt.if_not_exists = true;
+    }
+    stmt.name = parse_identifier("an index name");
+    expect(TokenType::KwOn, "ON after the index name");
+    stmt.table = parse_identifier("a table name");
+    expect(TokenType::LParen, "'(' before the indexed column");
+    stmt.column = parse_identifier("a column name");
+    expect(TokenType::RParen, "')' after the indexed column");
+    return stmt;
+}
 
 CreateTableStmt Parser::parse_create_table() {
     expect(TokenType::KwCreate, "CREATE");

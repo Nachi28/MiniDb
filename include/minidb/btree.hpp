@@ -3,26 +3,31 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <vector>
 
 #include "minidb/page.hpp"
 #include "minidb/pager.hpp"
+#include "minidb/slice.hpp"
 
 namespace minidb {
 
-// A B+tree keyed by int64, with variable-length payloads living in the leaves.
-// Internal nodes carry separator keys only, and leaves are chained left to
-// right, so a full table scan is a linked-list walk rather than a tree walk.
+// A B+tree over byte-string keys, ordered by plain memcmp.
+//
+// One tree implementation serves both roles in the database because the key
+// encodings do the work: a table tree is keyed by an order-preserving rowid,
+// and an index tree by (column value, rowid). Internal nodes carry separator
+// keys only, and leaves are chained left to right, so a full scan is a
+// linked-list walk rather than a tree walk.
 //
 // Pages are slotted: a sorted array of 2-byte offsets grows forward from the
 // node header while cell data grows backward from the end of the page, which is
-// what lets rows of different sizes share a page without padding.
+// what lets keys and rows of different sizes share a page without padding.
 class BTree {
 public:
-    // A cell must leave room for at least two per leaf, otherwise a split could
-    // not make progress. Larger rows need overflow pages, which phase 3 does
-    // not have yet; they are rejected with a clear error instead.
-    static constexpr std::size_t kMaxPayload = 1980;
+    // Two cells must always fit in a page, or a split could not make progress.
+    static constexpr std::size_t kMaxKey = 300;
+    static constexpr std::size_t kMaxPayload = 1700;
 
     BTree(Pager& pager, PageId root);
 
@@ -32,31 +37,34 @@ public:
     PageId root() const { return root_; }
 
     // Inserts, or replaces the payload if the key is already present.
-    void insert(std::int64_t key, const std::uint8_t* payload, std::size_t size);
+    void insert(Slice key, Slice payload);
 
-    bool find(std::int64_t key, std::vector<std::uint8_t>* out) const;
+    bool find(Slice key, std::vector<std::uint8_t>* out) const;
 
-    bool erase(std::int64_t key);
+    bool erase(Slice key);
 
-    // Visits every entry in ascending key order; return false to stop early.
-    using Visitor = std::function<bool(std::int64_t, const std::uint8_t*, std::size_t)>;
+    // Visits entries in ascending key order; return false to stop early.
+    using Visitor = std::function<bool(Slice key, Slice payload)>;
     void scan(const Visitor& visit) const;
+
+    // Same, but starting at the first key >= `start`. This is what turns an
+    // index into a range scan.
+    void scan_from(Slice start, const Visitor& visit) const;
 
     std::size_t size() const;      // entries, counted by scanning
     std::size_t height() const;    // 1 for a tree that is a single leaf
-    std::int64_t max_key() const;  // 0 when empty
+    std::string max_key() const;   // empty when the tree is empty
 
 private:
     struct Split {
         bool happened = false;
-        std::int64_t key = 0;            // separator promoted into the parent
+        std::string key;                 // separator promoted into the parent
         PageId right = kInvalidPage;     // page the separator points past
     };
 
-    Split insert_into(PageId page, std::int64_t key, const std::uint8_t* payload,
-                      std::size_t size);
+    Split insert_into(PageId page, Slice key, Slice payload);
     PageId leftmost_leaf() const;
-    PageId find_leaf(std::int64_t key) const;
+    PageId find_leaf(Slice key) const;
 
     Pager* pager_;
     PageId root_;

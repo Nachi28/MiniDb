@@ -31,7 +31,9 @@ private:
     [[noreturn]] void fail(const std::string& message) const;
     [[noreturn]] void fail_at(const Token& tok, const std::string& message) const;
 
+    Statement parse_create();
     CreateTableStmt parse_create_table();
+    CreateIndexStmt parse_create_index();
     InsertStmt parse_insert();
     SelectStmt parse_select();
 

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(minidb VERSION 0.4.0 LANGUAGES CXX)
+project(minidb VERSION 0.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,6 +22,9 @@ add_library(minidb_core
   src/pager.cpp
   src/wal.cpp
   src/btree.cpp
+  src/key.cpp
+  src/index.cpp
+  src/plan.cpp
   src/table.cpp
   src/database.cpp
   src/executor.cpp
