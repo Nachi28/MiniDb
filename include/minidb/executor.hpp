@@ -42,6 +42,7 @@ private:
     ResultSet exec_create(const CreateTableStmt& stmt);
     ResultSet exec_insert(const InsertStmt& stmt);
     ResultSet exec_select(const SelectStmt& stmt);
+    ResultSet exec_transaction(const TransactionStmt& stmt);
 
     Database& db_;
 };

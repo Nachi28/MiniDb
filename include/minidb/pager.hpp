@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "minidb/page.hpp"
+#include "minidb/wal.hpp"
 
 namespace minidb {
 
@@ -63,7 +64,19 @@ public:
     PageGuard fetch(PageId id);
     PageGuard allocate(PageId* out_id);
 
-    void flush();
+    // Appends every dirty page to the log, then a commit marker, then syncs.
+    // Once this returns the changes survive a crash.
+    void commit();
+
+    // Throws away everything written since the last commit: the log tail goes,
+    // and the buffer pool is purged so the next read comes from durable state.
+    void rollback();
+
+    // Folds committed log frames back into the database file and empties the
+    // log. Runs automatically once the log grows past a threshold.
+    void checkpoint();
+
+    void flush() { commit(); }  // the older name for commit()
 
     PageId page_count() const { return page_count_; }
     bool memory_only() const { return memory_only_; }
@@ -78,6 +91,8 @@ public:
     std::size_t disk_reads() const { return reads_; }
     std::size_t disk_writes() const { return writes_; }
     std::size_t evictions() const { return evictions_; }
+    std::size_t wal_frames() const { return wal_ ? wal_->frame_count() : 0; }
+    std::size_t checkpoints() const { return checkpoints_; }
 
 private:
     friend class PageGuard;
@@ -96,6 +111,8 @@ private:
     void detach_from_lru(Frame& frame);
     void read_page(PageId id, std::uint8_t* into);
     void write_page(PageId id, const std::uint8_t* from);
+    void write_file_page(PageId id, const std::uint8_t* from);
+    void purge_pool();
     void open_file();
     void load_header();
     void store_header();
@@ -103,6 +120,9 @@ private:
     std::string path_;
     bool memory_only_ = false;
     std::fstream file_;
+    std::unique_ptr<Wal> wal_;
+    // Cached so a read does not have to seek to EOF just to bounds-check.
+    std::streamoff file_size_ = 0;
 
     // unique_ptr so that growing the pool never moves a frame, and therefore
     // never invalidates a pointer an outstanding PageGuard is holding.
@@ -122,6 +142,14 @@ private:
     std::size_t reads_ = 0;
     std::size_t writes_ = 0;
     std::size_t evictions_ = 0;
+    std::size_t checkpoints_ = 0;
+
+    // State to restore on rollback. Pages allocated inside an aborted
+    // transaction stay allocated in the file; they are simply unreferenced.
+    PageId snapshot_page_count_ = 1;
+    PageId snapshot_catalog_root_ = kInvalidPage;
+
+    std::size_t checkpoint_threshold_ = 1000;  // frames
 };
 
 }  // namespace minidb

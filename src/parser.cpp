@@ -119,7 +119,20 @@ Statement Parser::parse_statement() {
     if (check(TokenType::KwCreate)) return Statement(parse_create_table());
     if (check(TokenType::KwInsert)) return Statement(parse_insert());
     if (check(TokenType::KwSelect)) return Statement(parse_select());
-    fail("expected CREATE, INSERT or SELECT, found " + describe_token(current()));
+
+    if (check(TokenType::KwBegin) || check(TokenType::KwCommit) ||
+        check(TokenType::KwRollback)) {
+        TransactionStmt stmt;
+        const TokenType kind = advance().type;
+        stmt.kind = kind == TokenType::KwBegin      ? TransactionStmt::Kind::Begin
+                    : kind == TokenType::KwCommit   ? TransactionStmt::Kind::Commit
+                                                    : TransactionStmt::Kind::Rollback;
+        match(TokenType::KwTransaction);  // the noise word is optional
+        return Statement(stmt);
+    }
+
+    fail("expected CREATE, INSERT, SELECT, BEGIN, COMMIT or ROLLBACK, found " +
+         describe_token(current()));
 }
 
 ExprPtr Parser::parse_expression() { return parse_expr_bp(0); }

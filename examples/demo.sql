@@ -58,3 +58,22 @@ FROM sales GROUP BY region ORDER BY 2 DESC;
 -- Scalar functions.
 SELECT UPPER(rep), LENGTH(rep), ABS(-units), ROUND(amount, 1), COALESCE(amount, 0)
 FROM sales WHERE region = 'west';
+
+-- ---------------------------------------------------------------- phase 4 --
+-- Outside a transaction each statement commits by itself. Inside one, nothing
+-- is durable until COMMIT, and ROLLBACK puts the database back as it was.
+CREATE TABLE ledger (entry TEXT, amount REAL);
+INSERT INTO ledger VALUES ('opening', 100.0);
+
+BEGIN;
+INSERT INTO ledger VALUES ('mistake', -999.0), ('another mistake', -999.0);
+SELECT COUNT(*) AS during_transaction FROM ledger;
+ROLLBACK;
+
+SELECT COUNT(*) AS after_rollback, SUM(amount) AS balance FROM ledger;
+
+BEGIN;
+INSERT INTO ledger VALUES ('deposit', 50.0);
+COMMIT;
+
+SELECT entry, amount FROM ledger ORDER BY amount DESC;

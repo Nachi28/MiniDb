@@ -89,6 +89,15 @@ struct SelectStmt {
     std::int64_t limit = -1;       // -1 => unlimited
 };
 
-using Statement = std::variant<CreateTableStmt, InsertStmt, SelectStmt>;
+// BEGIN / COMMIT / ROLLBACK. Outside an explicit transaction every
+// statement commits on its own, which is what makes a crash lose at most
+// the statement that was running.
+struct TransactionStmt {
+    enum class Kind { Begin, Commit, Rollback };
+    Kind kind = Kind::Begin;
+};
+
+using Statement =
+    std::variant<CreateTableStmt, InsertStmt, SelectStmt, TransactionStmt>;
 
 }  // namespace minidb

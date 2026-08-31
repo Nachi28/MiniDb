@@ -215,3 +215,69 @@ and `Database::flush` writes back the ones that moved.
   error rather than silently truncated.
 - **No crash safety.** A flush that is interrupted can leave a torn file. That is
   exactly what phase 4's write-ahead log is for.
+
+## A write-ahead log, not a rollback journal
+
+Two designs solve the same problem. A rollback journal saves each page's
+*previous* contents before overwriting it, and recovery undoes; a write-ahead
+log appends each page's *new* contents and recovery redoes. MiniDB writes ahead.
+
+The reason is what a commit costs. With a rollback journal, committing means the
+database file itself must be fully written and synced. With a log, committing is
+an append and one sync of a file that is being written sequentially -- and the
+database file is only touched later, in bulk, at a checkpoint. Evicting a dirty
+page mid-transaction becomes cheap for the same reason: it is another append,
+not a seek into the middle of the database.
+
+## The commit marker is the header page
+
+Every commit ends by appending page 0 -- the file header -- with the database
+size written into the frame header. A non-zero size is what makes a frame a
+commit marker.
+
+This falls out of something that was already true: page 0 holds the page count
+and the catalogue root, so it changes in almost every transaction anyway.
+Reusing it means there is no separate marker record to keep consistent, and
+recovery has exactly one rule: replay frames until the last one carrying a size,
+and throw away whatever follows.
+
+## Recovery needs no undo information
+
+A frame is trusted only if its salt matches the log header and its checksum
+matches its contents. Recovery walks forward from the start, stopping at the
+first frame that fails either test, and remembers the offset of the last commit
+marker it saw. Everything after that offset is truncated.
+
+That covers all three failure shapes at once: a clean kill between transactions
+(nothing after the last commit), a kill mid-transaction (uncommitted frames,
+dropped), and a torn write (a frame whose checksum fails, dropped along with
+everything after it -- including any commit marker that followed, because the
+frames it depended on can no longer be trusted).
+
+## The salt exists to kill stale generations
+
+After a checkpoint the log is truncated and its salt incremented. Without the
+salt, a crash that left a longer log behind, followed by a checkpoint and a
+shorter log, could leave old frames sitting past the new end of file with valid
+checksums. The salt makes every one of them unrecognisable.
+
+## Rollback purges the buffer pool
+
+Undoing a transaction cannot just discard dirty pages, because some of them were
+already spilled into the log by eviction. So rollback truncates the log back to
+the last commit and then drops every cached page, forcing the next read to come
+from durable state. Pages allocated inside the aborted transaction stay
+allocated in the file; they are simply unreferenced, and reclaiming them needs a
+free list that does not exist yet.
+
+`Database::rollback` also rebuilds the in-memory catalogue, because a table's
+root page and rowid counter may have moved inside the transaction, and a table
+created inside it must stop existing.
+
+## fsync, not just fflush
+
+`fflush` moves bytes from the process into the operating system, which is not
+the same as moving them onto the disk. Commit calls `_commit` on Windows and
+`fsync` elsewhere. Without that, a power cut loses committed transactions that
+the process was told were durable -- and the crash test, which kills a process
+but not the OS, would never notice the difference.

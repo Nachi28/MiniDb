@@ -10,5 +10,6 @@ cmake-build-*/
 *.pdb
 *.ilk
 *.db
+*-wal
 minidb_bench.db
 CMakeUserPresets.json

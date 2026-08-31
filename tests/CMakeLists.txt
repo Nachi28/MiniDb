@@ -7,6 +7,8 @@ add_executable(minidb_tests
   test_pager.cpp
   test_btree.cpp
   test_storage.cpp
+  test_wal.cpp
+  test_recovery.cpp
   test_executor.cpp
 )
 

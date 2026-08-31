@@ -40,8 +40,16 @@ public:
     std::size_t table_count() const { return tables_.size(); }
 
     // Writes back any catalogue entries whose root page or rowid counter moved,
-    // then flushes the buffer pool.
+    // then commits the buffer pool to the write-ahead log.
     void flush();
+
+    // Explicit transactions. Outside one, every mutating statement commits by
+    // itself, so a crash loses at most the statement that was in flight.
+    void begin();
+    void commit();
+    void rollback();
+    void autocommit();  // commits unless an explicit transaction is open
+    bool in_transaction() const { return in_transaction_; }
 
     const std::string& path() const { return path_; }
     Pager& pager() { return *pager_; }
@@ -56,6 +64,7 @@ private:
     std::unique_ptr<Pager> pager_;
     std::unique_ptr<BTree> catalog_;
     std::map<std::string, Table> tables_;  // key: lowercased name
+    bool in_transaction_ = false;
 };
 
 }  // namespace minidb

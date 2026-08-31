@@ -491,7 +491,29 @@ ResultSet Executor::execute(const Statement& stmt) {
     if (std::holds_alternative<InsertStmt>(stmt)) {
         return exec_insert(std::get<InsertStmt>(stmt));
     }
+    if (std::holds_alternative<TransactionStmt>(stmt)) {
+        return exec_transaction(std::get<TransactionStmt>(stmt));
+    }
     return exec_select(std::get<SelectStmt>(stmt));
+}
+
+ResultSet Executor::exec_transaction(const TransactionStmt& stmt) {
+    ResultSet result;
+    switch (stmt.kind) {
+        case TransactionStmt::Kind::Begin:
+            db_.begin();
+            result.message = "transaction started";
+            break;
+        case TransactionStmt::Kind::Commit:
+            db_.commit();
+            result.message = "transaction committed";
+            break;
+        case TransactionStmt::Kind::Rollback:
+            db_.rollback();
+            result.message = "transaction rolled back";
+            break;
+    }
+    return result;
 }
 
 ResultSet Executor::exec_create(const CreateTableStmt& stmt) {
@@ -514,6 +536,7 @@ ResultSet Executor::exec_create(const CreateTableStmt& stmt) {
     }
 
     db_.create_table(stmt.table, stmt.columns);
+    db_.autocommit();
     result.message = "table " + stmt.table + " created";
     return result;
 }
@@ -556,6 +579,8 @@ ResultSet Executor::exec_insert(const InsertStmt& stmt) {
         table->insert(std::move(row));
         ++inserted;
     }
+
+    db_.autocommit();
 
     ResultSet result;
     result.message = std::to_string(inserted) + " row(s) inserted";

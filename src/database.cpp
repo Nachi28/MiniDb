@@ -118,7 +118,35 @@ void Database::flush() {
             entry.second.mark_clean();
         }
     }
-    pager_->flush();
+    pager_->commit();
+}
+
+void Database::begin() {
+    if (in_transaction_) throw DbError("a transaction is already open");
+    flush();  // start from a clean, durable point
+    in_transaction_ = true;
+}
+
+void Database::commit() {
+    flush();
+    in_transaction_ = false;
+}
+
+void Database::rollback() {
+    if (!pager_) return;
+    pager_->rollback();
+
+    // In-memory schema state is now stale: a table's root page and rowid
+    // counter may have moved inside the aborted transaction, and a table
+    // created inside it no longer exists. Rebuild from what is durable.
+    tables_.clear();
+    catalog_ = std::make_unique<BTree>(*pager_, pager_->catalog_root());
+    load_catalog();
+    in_transaction_ = false;
+}
+
+void Database::autocommit() {
+    if (!in_transaction_) flush();
 }
 
 }  // namespace minidb

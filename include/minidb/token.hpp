@@ -19,6 +19,7 @@ enum class TokenType {
     KwCreate, KwTable, KwAnd, KwOr, KwNot, KwNull, KwIs,
     KwInteger, KwReal, KwText, KwOrder, KwBy, KwAsc, KwDesc,
     KwLimit, KwAs, KwIf, KwExists, KwGroup, KwHaving,
+    KwBegin, KwCommit, KwRollback, KwTransaction,
 
     // Punctuation and operators
     Star, Comma, LParen, RParen, Semicolon,

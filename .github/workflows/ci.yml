@@ -39,6 +39,10 @@ jobs:
           ./build/minidb --db ci.db w.sql
           ./build/minidb --db ci.db r.sql | grep -q 6
 
+      - name: Crash recovery torture
+        if: runner.os != 'Windows'
+        run: ./build/minidb_crash torture --db torture.db --rounds 100
+
       - name: Benchmark smoke test
         if: runner.os != 'Windows'
         run: ./build/minidb_bench --rows 20000 --db bench.db

@@ -192,7 +192,7 @@ int main(int argc, char** argv) {
         return ok ? 0 : 1;
     }
 
-    std::cout << "MiniDB 0.3.0 - phase 3 (B+tree storage)\n"
+    std::cout << "MiniDB 0.4.0 - phase 4 (write-ahead log)\n"
               << "database: " << db.path() << "\n"
               << "Type .help for shell commands, .exit to quit.\n";
 

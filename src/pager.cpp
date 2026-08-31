@@ -74,15 +74,25 @@ Pager::Pager(std::string path, std::size_t pool_pages) : path_(std::move(path)) 
 
     if (!memory_only_) {
         open_file();
+        // Opening the log recovers it: frames after the last commit marker,
+        // including a half-written one, are discarded. Folding what survives
+        // into the database file makes the file authoritative again before
+        // anything reads the header.
+        wal_ = std::make_unique<Wal>(path_ + "-wal", false);
+        if (!wal_->empty()) checkpoint();
         load_header();
     } else {
+        wal_ = std::make_unique<Wal>(std::string(), true);
         store_header();  // keep the in-memory header self-consistent
     }
+    snapshot_page_count_ = page_count_;
+    snapshot_catalog_root_ = catalog_root_;
 }
 
 Pager::~Pager() {
     try {
-        flush();
+        commit();
+        checkpoint();  // leave the database file standing on its own
     } catch (...) {
         // A destructor must not throw; a failed final flush is reported by the
         // explicit flush() that well-behaved callers make before closing.
@@ -98,6 +108,10 @@ void Pager::open_file() {
         file_.open(path_, std::ios::in | std::ios::out | std::ios::binary);
     }
     if (!file_.is_open()) throw DbError("cannot open database file: " + path_);
+
+    file_.seekg(0, std::ios::end);
+    file_size_ = file_.tellg();
+    file_.clear();
 }
 
 void Pager::load_header() {
@@ -143,12 +157,16 @@ void Pager::read_page(PageId id, std::uint8_t* into) {
     std::fill(into, into + kPageSize, static_cast<std::uint8_t>(0));
     if (memory_only_) return;
 
+    // The log holds the newest image of any page written since the last
+    // checkpoint, so it wins over the database file.
+    if (wal_ && wal_->read(id, into)) {
+        ++reads_;
+        return;
+    }
+
     const std::streamoff offset = static_cast<std::streamoff>(id) *
                                   static_cast<std::streamoff>(kPageSize);
-    file_.seekg(0, std::ios::end);
-    const std::streamoff size = file_.tellg();
-    file_.clear();
-    if (offset >= size) return;  // allocated but never written: reads as zeroes
+    if (offset >= file_size_) return;  // allocated but never written: all zeroes
 
     file_.seekg(offset, std::ios::beg);
     file_.read(reinterpret_cast<char*>(into), static_cast<std::streamsize>(kPageSize));
@@ -156,14 +174,25 @@ void Pager::read_page(PageId id, std::uint8_t* into) {
     ++reads_;
 }
 
+// A dirty page leaving the pool mid-transaction is appended to the log as a
+// non-commit frame. It is visible to this connection immediately and becomes
+// durable only when a commit marker follows it.
 void Pager::write_page(PageId id, const std::uint8_t* from) {
+    if (memory_only_) return;
+    wal_->append(id, from, 0);
+    ++writes_;
+}
+
+void Pager::write_file_page(PageId id, const std::uint8_t* from) {
     if (memory_only_) return;
     const std::streamoff offset = static_cast<std::streamoff>(id) *
                                   static_cast<std::streamoff>(kPageSize);
     file_.seekp(offset, std::ios::beg);
     file_.write(reinterpret_cast<const char*>(from), static_cast<std::streamsize>(kPageSize));
     if (!file_) throw DbError("write failed on database file: " + path_);
-    ++writes_;
+
+    const std::streamoff end = offset + static_cast<std::streamoff>(kPageSize);
+    if (end > file_size_) file_size_ = end;
 }
 
 void Pager::detach_from_lru(Frame& frame) {
@@ -263,24 +292,85 @@ void Pager::unpin(PageId id, bool dirty) {
     }
 }
 
-void Pager::flush() {
+void Pager::commit() {
     if (memory_only_) {
         header_dirty_ = false;
         return;
     }
-    if (!file_.is_open()) return;
+    if (!file_.is_open() || !wal_) return;
 
-    if (header_dirty_) {
-        write_page(0, header_.data());
-        header_dirty_ = false;
-    }
+    store_header();  // page_count_ and catalog_root_ may have moved
+
     for (const std::unique_ptr<Frame>& frame : frames_) {
         if (frame->id != kInvalidPage && frame->dirty) {
-            write_page(frame->id, frame->data.data());
+            wal_->append(frame->id, frame->data.data(), 0);
             frame->dirty = false;
+            ++writes_;
         }
     }
-    file_.flush();
+
+    // The header goes last and carries the database size, which is what makes
+    // it the commit marker. Recovery replays up to here and no further.
+    wal_->append(0, header_.data(), page_count_);
+    header_dirty_ = false;
+    wal_->sync();
+
+    snapshot_page_count_ = page_count_;
+    snapshot_catalog_root_ = catalog_root_;
+
+    if (wal_->frame_count() >= checkpoint_threshold_) checkpoint();
 }
 
+void Pager::purge_pool() {
+    for (const std::unique_ptr<Frame>& frame : frames_) {
+        if (frame->pins > 0) {
+            throw DbError("cannot roll back while a page is still pinned");
+        }
+    }
+    resident_.clear();
+    lru_.clear();
+    free_frames_.clear();
+    for (std::size_t i = 0; i < frames_.size(); ++i) {
+        frames_[i]->id = kInvalidPage;
+        frames_[i]->dirty = false;
+        frames_[i]->pins = 0;
+        frames_[i]->in_lru = false;
+        free_frames_.push_back(i);
+    }
+}
+
+void Pager::rollback() {
+    if (memory_only_ || !wal_) return;
+
+    // Nothing dirty in the pool may survive, because some of it was already
+    // spilled into the log and the rest contradicts the durable state.
+    purge_pool();
+    wal_->rollback_to_commit();
+
+    page_count_ = snapshot_page_count_;
+    catalog_root_ = snapshot_catalog_root_;
+    store_header();
+    header_dirty_ = false;
+}
+
+void Pager::checkpoint() {
+    if (memory_only_ || !wal_ || !file_.is_open()) return;
+    if (wal_->committed_pages() == 0) {
+        wal_->reset();
+        return;
+    }
+
+    wal_->for_each_committed([&](PageId page, const std::uint8_t* image) {
+        write_file_page(page, image);
+        ++writes_;
+    });
+    file_.flush();
+
+    // Only once the database file holds everything is it safe to forget the
+    // log. Resetting it first would lose the pages on a crash in between.
+    wal_->reset();
+    ++checkpoints_;
+
+    purge_pool();  // cached images may predate what was just written
+}
 }  // namespace minidb

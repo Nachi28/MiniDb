@@ -27,7 +27,10 @@ const std::map<std::string, TokenType>& keyword_table() {
         {"desc", TokenType::KwDesc},       {"limit", TokenType::KwLimit},
         {"as", TokenType::KwAs},           {"if", TokenType::KwIf},
         {"exists", TokenType::KwExists}, {"group", TokenType::KwGroup},
-        {"having", TokenType::KwHaving},
+        {"having", TokenType::KwHaving},   {"begin", TokenType::KwBegin},
+        {"commit", TokenType::KwCommit},   {"rollback", TokenType::KwRollback},
+        {"transaction", TokenType::KwTransaction},
+        {"end", TokenType::KwCommit},
     };
     return table;
 }
@@ -76,6 +79,10 @@ const char* token_type_name(TokenType t) {
         case TokenType::KwExists: return "EXISTS";
         case TokenType::KwGroup: return "GROUP";
         case TokenType::KwHaving: return "HAVING";
+        case TokenType::KwBegin: return "BEGIN";
+        case TokenType::KwCommit: return "COMMIT";
+        case TokenType::KwRollback: return "ROLLBACK";
+        case TokenType::KwTransaction: return "TRANSACTION";
         case TokenType::Star: return "star";
         case TokenType::Comma: return "comma";
         case TokenType::LParen: return "open paren";
