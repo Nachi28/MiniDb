@@ -4,9 +4,10 @@ A relational database written from scratch in C++17 — SQL parser, query planne
 execution engine and storage, with no third-party dependencies.
 
 MiniDB is built in phases, and every phase ends with something that runs.
-**Phases 1-5 are complete:** SQL text is lexed, parsed into an AST, analysed,
+**All six phases are complete:** SQL text is lexed, parsed into an AST, analysed,
 planned against available indexes, then executed over a paged B+tree on disk,
-behind an LRU buffer pool, with a write-ahead log that survives `kill -9`.
+behind an LRU buffer pool, with a write-ahead log that survives `kill -9` --
+reachable locally or over TCP.
 
 ```sql
 minidb> SELECT name, score * 2 AS doubled FROM players ORDER BY score DESC LIMIT 2;
@@ -35,6 +36,11 @@ Then start the shell, or run a script:
 ./build/minidb                                  # in-memory
 ./build/minidb --db shop.db                     # persistent
 ./build/minidb --db shop.db examples/demo.sql   # run a script
+
+./build/minidb --db shop.db --serve 5433        # serve it
+./build/minidb --connect 127.0.0.1:5433         # connect to it
+
+docker build -t minidb . && docker run -p 5433:5433 minidb
 ```
 
 Shell commands: `.help`, `.tables`, `.indexes`, `.schema [table]`, `.flush`, `.exit`.
@@ -59,6 +65,7 @@ Shell commands: `.help`, `.tables`, `.indexes`, `.schema [table]`, `.flush`, `.e
 | Transactions | `BEGIN` / `COMMIT` / `ROLLBACK`; autocommit outside an explicit one |
 | Indexes | `CREATE INDEX ... ON t (col)`, on any column type, duplicates allowed |
 | Planning | Cost-based access-path choice, `EXPLAIN` |
+| Server | Line protocol over TCP, `--serve` / `--connect`, Docker image |
 | Diagnostics | Every error carries a line, column and caret |
 
 Identifiers and keywords are case-insensitive. Strings use `''` to escape a
@@ -238,6 +245,29 @@ torture: 500 kill-and-recover rounds survived
 
 A 20-round version runs in CI on every push.
 
+## Verified against SQLite
+
+```bash
+python tools/difftest.py --queries 700 --rows 800
+700 queries, 800 table rows, 46925 result rows compared, 0 mismatches
+```
+
+The harness generates random queries from templates -- equality, ranges, text
+comparisons, `OR`, `NOT`, `IS NULL`, aggregates, `GROUP BY`/`HAVING`,
+`ORDER BY`/`LIMIT` -- runs each against both MiniDB and SQLite, and compares
+the rows. SQLite is the oracle, and Python ships it in the standard library,
+so the reference side needs no subprocess and the test needs no dependencies.
+
+Indexes are created on the MiniDB side only, so the planner's access paths are
+checked against an engine that has never heard of them.
+
+## Talking to it over a socket
+
+The wire protocol is lines, not a binary framing: the client sends SQL ending
+in `;` and the server replies with the same table the shell prints, terminated
+by a single `0x04`. It is debuggable with `telnet`, and the server reuses the
+shell's formatter unchanged -- the only edit was making it take an `ostream`.
+
 ## Architecture
 
 ```
@@ -272,7 +302,7 @@ adding an operator is a single row in the binding-power table in
 - [x] **Phase 3** - paged B+tree storage, LRU buffer pool, on-disk catalogue
 - [x] **Phase 4** - write-ahead log, crash recovery, transactions
 - [x] **Phase 5** - secondary indexes, cost-based access-path planning, `EXPLAIN`
-- [ ] **Phase 6** — TCP wire protocol, CLI client, Docker image
+- [x] **Phase 6** - TCP wire protocol, CLI client, Docker image, SQLite differential test
 
 ## Tests
 

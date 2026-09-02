@@ -43,6 +43,21 @@ jobs:
         if: runner.os != 'Windows'
         run: ./build/minidb_crash torture --db torture.db --rounds 100
 
+      - name: Differential test against SQLite
+        if: runner.os != 'Windows'
+        run: python3 tools/difftest.py --queries 500 --rows 600
+
+      - name: Client/server round trip
+        if: runner.os == 'Linux'
+        run: |
+          ./build/minidb --db net.db --serve 5433 &
+          sleep 1
+          printf "CREATE TABLE t (a INTEGER);
+INSERT INTO t VALUES (1),(2),(3);
+SELECT SUM(a) FROM t;
+.exit
+"             | ./build/minidb --connect 127.0.0.1:5433 | grep -q 6
+
       - name: Benchmark smoke test
         if: runner.os != 'Windows'
         run: ./build/minidb_bench --rows 20000 --db bench.db

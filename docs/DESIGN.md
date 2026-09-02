@@ -359,3 +359,28 @@ purpose. `Table` maintains `row_count_` incrementally and it is persisted as a
 catalogue field, alongside the root page and the rowid counter. That is the
 first genuine *statistic* in the system; histograms, which would let ranges be
 estimated without probing, would go in the same place.
+
+## The server is a line protocol, and one client at a time
+
+A binary wire format would be the 'real' answer and buys nothing here: the
+shell already renders a result set as text, so the server sends exactly that
+and terminates it with `0x04`. Making `print_result` take an `ostream` was the
+whole change. The protocol is inspectable with telnet, which is worth more
+than the bytes a binary framing would save.
+
+The accept loop is single-threaded and handles one connection at a time. There
+is a `ponytail:` marker on it: `Database` has no locking, so concurrent
+clients need a thread per connection *and* a lock around the database, and
+neither is worth writing before there is a second client.
+
+## SQLite as the oracle
+
+Unit tests check what I thought to check. A differential test checks what
+SQLite thinks, across randomly generated queries, which is a much larger set.
+Comparison is deliberately permissive about formatting -- MiniDB prints text
+while SQLite returns typed values -- and strict about content.
+
+The harness guards against passing vacuously: it counts the rows it actually
+compared and fails if that is zero. An early version parsed the ASCII output
+on the wrong separator and matched every table three times over; the count is
+what would have caught it.
