@@ -135,12 +135,14 @@ int main(int argc, char** argv) {
         std::string command = "\"" + self + "\" writer --db \"" + o.db + "\" --rows " +
                               std::to_string(rows);
         if (commit) command += " --commit";
+        // Build the redirect per platform rather than appending one and
+        // trimming it back -- that trim was off by five characters and
+        // truncated the command on anything but Windows.
 #ifdef _WIN32
-        command = "\"" + command + "\"";  // cmd.exe strips one layer of quoting
-#endif
-        command += " > nul 2>&1";
-#ifndef _WIN32
-        command = command.substr(0, command.size() - 16) + " > /dev/null 2>&1";
+        // cmd.exe strips one layer of quoting from the whole line.
+        command = "\"" + command + "\" > nul 2>&1";
+#else
+        command += " > /dev/null 2>&1";
 #endif
         std::system(command.c_str());
 

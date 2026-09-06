@@ -26,9 +26,10 @@ jobs:
       - name: Test
         run: ctest --test-dir build --build-config Release --output-on-failure
 
-      - name: Run the demo script
+      - name: Run every example
         if: runner.os != 'Windows'
-        run: ./build/minidb examples/demo.sql
+        run: |
+          for f in examples/*.sql; do ./build/minidb --db ex.db "$f" > /dev/null; rm -f ex.db ex.db-wal; done
 
       - name: Check that data survives a restart
         if: runner.os != 'Windows'

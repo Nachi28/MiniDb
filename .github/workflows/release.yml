@@ -1,0 +1,95 @@
+name: release
+
+# Tag a commit and push it to cut a release:
+#   git tag v1.0.0 && git push origin v1.0.0
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-x86_64
+            archive: tar.gz
+          - os: macos-latest
+            name: macos-arm64
+            archive: tar.gz
+          - os: windows-latest
+            name: windows-x86_64
+            archive: zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DMINIDB_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      # A release that fails its own test suite is worse than no release.
+      - name: Test
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
+      - name: Stage (unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p stage
+          for b in minidb minidb_bench minidb_crash; do
+            cp "$(find build -type f -name "$b" -perm -u+x | head -1)" stage/
+          done
+          cp README.md LICENSE stage/
+          cp -r examples stage/
+          tar -czf minidb-${{ github.ref_name }}-${{ matrix.name }}.tar.gz -C stage .
+
+      - name: Stage (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force stage | Out-Null
+          # Single-config generators put binaries in build/, multi-config
+          # ones in build/Release/. Find them instead of guessing.
+          Get-ChildItem -Path build -Recurse -Include minidb.exe,minidb_bench.exe,minidb_crash.exe |
+            ForEach-Object { Copy-Item $_.FullName stage/ }
+          Copy-Item README.md,LICENSE stage/
+          Copy-Item -Recurse examples stage/
+          Compress-Archive -Path stage/* -DestinationPath "minidb-${{ github.ref_name }}-${{ matrix.name }}.zip"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: minidb-${{ matrix.name }}
+          path: minidb-*.${{ matrix.archive }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: minidb-*
+          generate_release_notes: true
+          body: |
+            Prebuilt binaries for Linux, macOS and Windows. Each archive contains
+            `minidb`, `minidb_bench`, `minidb_crash` and the example scripts.
+
+            ```
+            ./minidb --db shop.db examples/01_basics.sql
+            ```
+
+            Every binary was built with warnings-as-errors and passed the full
+            test suite before being published.

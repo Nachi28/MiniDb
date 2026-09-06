@@ -209,7 +209,7 @@ Every file, with its job. Line counts are approximate and will drift.
 | `bench/main.cpp` | `minidb_bench` — throughput, pool stats, index comparison |
 | `tools/crash.cpp` | `minidb_crash` — writer/verify/torture crash harness |
 | `tools/difftest.py` | Randomised differential test against Python's `sqlite3` |
-| `examples/demo.sql` | Runnable tour of every phase's features |
+| `examples/*.sql` | Four short scripts covering the whole feature set |
 | `Dockerfile` | Multi-stage build; runs the test suite during build |
 | `.github/workflows/ci.yml` | Linux/Windows/macOS build, test, difftest, round trip |
 
@@ -996,7 +996,7 @@ ctest --test-dir build --output-on-failure     # both registered tests
 ./build/minidb_tests                            # 213 unit cases directly
 ./build/minidb_crash torture --db c.db --rounds 500
 python tools/difftest.py --queries 700 --rows 800
-./build/minidb --db d.db examples/demo.sql      # feature tour
+./build/minidb --db d.db examples/03_indexes.sql # feature tour
 ```
 
 ### The test framework
