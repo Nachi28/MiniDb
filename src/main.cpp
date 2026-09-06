@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -373,7 +374,18 @@ int main(int argc, char** argv) {
                               connect_to.substr(colon + 1).c_str())));
     }
 
-    Database db(db_path);
+    // Opening the database can fail -- a missing directory, a file that is not
+    // a MiniDB database. Report it rather than terminating on an uncaught
+    // exception with no message at all.
+    std::unique_ptr<Database> owned;
+    try {
+        owned = std::make_unique<Database>(db_path);
+    } catch (const std::exception& e) {
+        std::cerr << "minidb: " << e.what() << "\n";
+        return 2;
+    }
+    Database& db = *owned;
+
     if (port != 0) return serve(db, port);
 
     Executor executor(db);

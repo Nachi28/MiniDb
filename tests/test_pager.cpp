@@ -1,6 +1,7 @@
 #include "minidb/pager.hpp"
 
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -232,4 +233,60 @@ TEST(Pager, MemoryOnlyDatabasesNeverTouchDisk) {
     REQUIRE_EQ(pager.disk_writes(), static_cast<std::size_t>(0));
     REQUIRE_EQ(pager.disk_reads(), static_cast<std::size_t>(0));
     REQUIRE_EQ(pager.evictions(), static_cast<std::size_t>(0));
+}
+
+TEST(Pager, RefusesToOpenAShortForeignFileInsteadOfClobberingIt) {
+    // A file smaller than one page used to be treated as a brand new database,
+    // so pointing --db at, say, a SQL script silently overwrote it on flush.
+    TempDb db("shortfile");
+    {
+        std::FILE* f = nullptr;
+#ifdef _MSC_VER
+        fopen_s(&f, db.path.c_str(), "wb");
+#else
+        f = std::fopen(db.path.c_str(), "wb");
+#endif
+        REQUIRE(f != nullptr);
+        const char* text = "SELECT * FROM players;\n";
+        std::fwrite(text, 1, std::strlen(text), f);
+        std::fclose(f);
+    }
+
+    bool threw = false;
+    try {
+        Pager pager(db.path, 8);
+    } catch (const DbError&) {
+        threw = true;
+    }
+    REQUIRE(threw);
+
+    // ...and the file is still intact.
+    std::FILE* f = nullptr;
+#ifdef _MSC_VER
+    fopen_s(&f, db.path.c_str(), "rb");
+#else
+    f = std::fopen(db.path.c_str(), "rb");
+#endif
+    REQUIRE(f != nullptr);
+    char buffer[64] = {0};
+    const std::size_t n = std::fread(buffer, 1, sizeof(buffer) - 1, f);
+    std::fclose(f);
+    REQUIRE(n > 0);
+    REQUIRE(std::string(buffer).find("SELECT") == 0);
+}
+
+TEST(Pager, StillTreatsATrulyEmptyFileAsANewDatabase) {
+    TempDb db("emptyfile");
+    {
+        std::FILE* f = nullptr;
+#ifdef _MSC_VER
+        fopen_s(&f, db.path.c_str(), "wb");
+#else
+        f = std::fopen(db.path.c_str(), "wb");
+#endif
+        REQUIRE(f != nullptr);
+        std::fclose(f);  // zero bytes
+    }
+    Pager pager(db.path, 8);
+    REQUIRE_EQ(pager.page_count(), static_cast<PageId>(1));
 }

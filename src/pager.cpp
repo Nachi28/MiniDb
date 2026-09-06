@@ -121,9 +121,15 @@ void Pager::load_header() {
     const std::streamoff size = file_.tellg();
     file_.clear();
 
-    if (size < static_cast<std::streamoff>(kPageSize)) {  // brand new file
+    // Only a genuinely empty file is a new database. A short non-empty one is
+    // somebody else's file: treating it as new would overwrite it on the next
+    // flush, and the magic check below never gets a chance to object.
+    if (size == 0) {
         store_header();
         return;
+    }
+    if (size < static_cast<std::streamoff>(kPageSize)) {
+        throw DbError("not a MiniDB database file (too small): " + path_);
     }
 
     file_.seekg(0, std::ios::beg);
