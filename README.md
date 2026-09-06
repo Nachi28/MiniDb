@@ -4,8 +4,8 @@ A relational database engine written from scratch in C++17. SQL parser,
 cost-based query planner, B+tree storage on disk, and a write-ahead log that
 survives `kill -9`. No third-party dependencies.
 
-[![ci](https://github.com/Nachi28/MiniDB/actions/workflows/ci.yml/badge.svg)](https://github.com/Nachi28/MiniDB/actions/workflows/ci.yml)
-[![release](https://img.shields.io/github/v/release/Nachi28/MiniDB?sort=semver)](https://github.com/Nachi28/MiniDB/releases)
+[![ci](https://github.com/Nachi28/MiniDb/actions/workflows/ci.yml/badge.svg)](https://github.com/Nachi28/MiniDb/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/Nachi28/MiniDb?sort=semver)](https://github.com/Nachi28/MiniDb/releases)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://en.cppreference.com/w/cpp/17)
 
@@ -23,7 +23,7 @@ minidb> SELECT region, SUM(amount) AS total FROM sales
 
 ## Install
 
-Download a prebuilt binary from [Releases](https://github.com/Nachi28/MiniDB/releases),
+Download a prebuilt binary from [Releases](https://github.com/Nachi28/MiniDb/releases),
 or build it — CMake 3.16+ and any C++17 compiler, nothing else:
 
 ```bash
