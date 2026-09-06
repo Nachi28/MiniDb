@@ -20,6 +20,11 @@ minidb> SELECT name, score * 2 AS doubled FROM players ORDER BY score DESC LIMIT
 2 row(s) in 0.031 ms
 ```
 
+**New here?** [`docs/HANDBOOK.md`](docs/HANDBOOK.md) is the complete technical
+reference: every file, every byte layout, every invariant, and recipes for the
+changes you are most likely to want. [`docs/DESIGN.md`](docs/DESIGN.md) records why
+each decision was made and what was rejected.
+
 ## Build and run
 
 Requires CMake 3.16+ and any C++17 compiler (GCC, Clang or MSVC).
