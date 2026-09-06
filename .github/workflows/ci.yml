@@ -29,12 +29,14 @@ jobs:
       - name: Run every example
         if: runner.os != 'Windows'
         run: |
-          for f in examples/*.sql; do ./build/minidb --db ex.db "$f" > /dev/null; rm -f ex.db ex.db-wal; done
+          for f in examples/*.sql; do
+            ./build/minidb --db ex.db "$f" > /dev/null
+            rm -f ex.db ex.db-wal
+          done
 
       - name: Check that data survives a restart
         if: runner.os != 'Windows'
         run: |
-          ./build/minidb --db ci.db -h > /dev/null
           echo "CREATE TABLE t (a INTEGER); INSERT INTO t VALUES (1),(2),(3);" > w.sql
           echo "SELECT SUM(a) FROM t;" > r.sql
           ./build/minidb --db ci.db w.sql
@@ -53,11 +55,12 @@ jobs:
         run: |
           ./build/minidb --db net.db --serve 5433 &
           sleep 1
-          printf "CREATE TABLE t (a INTEGER);
-INSERT INTO t VALUES (1),(2),(3);
-SELECT SUM(a) FROM t;
-.exit
-"             | ./build/minidb --connect 127.0.0.1:5433 | grep -q 6
+          {
+            echo "CREATE TABLE t (a INTEGER);"
+            echo "INSERT INTO t VALUES (1),(2),(3);"
+            echo "SELECT SUM(a) FROM t;"
+            echo ".exit"
+          } | ./build/minidb --connect 127.0.0.1:5433 | grep -q 6
 
       - name: Benchmark smoke test
         if: runner.os != 'Windows'
