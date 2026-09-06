@@ -72,11 +72,44 @@ predicted 30 matching rows on this data where the truth was 4, so the planner
 probes the index and counts instead — stopping at the break-even point, past
 which the index has already lost.
 
+## `EXPLAIN ANALYZE`, which SQLite does not have
+
+`EXPLAIN` predicts. `EXPLAIN ANALYZE` runs the query and reports what actually
+happened beside what was predicted &mdash; Postgres has it, the SQLite shell does
+not. Same query, two access paths:
+
+```
+EXPLAIN ANALYZE SELECT kind, COUNT(*) FROM events WHERE score >= 490 GROUP BY kind;
+
+RANGE INDEX idx_score (490 <= score)  rows=400 of 20000  cost~1614 (scan would be 20000)
+  actual: 400 row(s) from the access path
+  FILTER (score >= 490)  ->  400 in, 400 out
+  GROUP BY kind  ->  400 row(s) in, 4 group(s)
+TOTAL  ->  4 row(s) in 1.554 ms, 1208 page fetch(es), 96.2% cache hit
+ESTIMATE  ->  predicted 400, actual 400 (exact)
+```
+```
+EXPLAIN ANALYZE SELECT COUNT(*) FROM events WHERE kind = 'click';
+
+SCAN TABLE  rows=20000 of 20000  cost~20000 (scan would be 20000)
+  actual: 20000 row(s) from the access path
+  FILTER (kind = 'click')  ->  20000 in, 5000 out
+TOTAL  ->  1 row(s) in 19.306 ms, 207 page fetch(es), 0.5% cache hit, 206 disk read(s)
+```
+
+Twelve times slower, a 0.5% cache hit rate against 96.2%, and you can see exactly
+why: the filter threw away three quarters of the rows the scan had to read.
+
+The `ESTIMATE` line is the planner grading its own homework. Because MiniDB
+probes the index rather than assuming a selectivity, it should always read
+`exact` &mdash; anything else means a row count or an index has drifted out of
+step with its table, which is a bug worth knowing about.
+
 ## What it does
 
 | | |
 |---|---|
-| **SQL** | `CREATE TABLE`, `CREATE INDEX`, `INSERT`, `SELECT`, `EXPLAIN` |
+| **SQL** | `CREATE TABLE`, `CREATE INDEX`, `INSERT`, `SELECT`, `EXPLAIN`, `EXPLAIN ANALYZE` |
 | **Clauses** | `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`, aliases and positions |
 | **Aggregates** | `COUNT(*)`, `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` |
 | **Functions** | `ABS`, `LENGTH`, `LOWER`, `UPPER`, `ROUND`, `COALESCE`, `IFNULL` |

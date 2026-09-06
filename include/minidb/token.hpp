@@ -20,7 +20,7 @@ enum class TokenType {
     KwInteger, KwReal, KwText, KwOrder, KwBy, KwAsc, KwDesc,
     KwLimit, KwAs, KwIf, KwExists, KwGroup, KwHaving,
     KwBegin, KwCommit, KwRollback, KwTransaction,
-    KwIndex, KwOn, KwExplain,
+    KwIndex, KwOn, KwExplain, KwAnalyze,
 
     // Punctuation and operators
     Star, Comma, LParen, RParen, Semicolon,

@@ -272,3 +272,101 @@ TEST(Plan, CreateIndexRejectsBadArguments) {
     REQUIRE_THROWS_AS(run(db, "CREATE INDEX idx_y ON t (nosuchcol);"), DbError);
     run(db, "CREATE INDEX IF NOT EXISTS idx_uid ON t (bucket);");  // tolerated
 }
+
+namespace {
+
+std::string analyze(Database& db, const std::string& query) {
+    const ResultSet r = run(db, "EXPLAIN ANALYZE " + query);
+    std::string text;
+    for (const Row& row : r.rows) {
+        if (!text.empty()) text += "\n";
+        text += row[0].to_string();
+    }
+    return text;
+}
+
+}  // namespace
+
+TEST(Analyze, ReportsThePlanRatherThanTheRows) {
+    Database db = populated(400);
+    const ResultSet r = run(db, "EXPLAIN ANALYZE SELECT * FROM t");
+    REQUIRE_EQ(r.column_names.size(), static_cast<std::size_t>(1));
+    REQUIRE_EQ(r.column_names[0], std::string("plan"));
+    // A report, not 400 rows of data.
+    REQUIRE(r.rows.size() < static_cast<std::size_t>(20));
+    REQUIRE(mentions(analyze(db, "SELECT * FROM t"), "TOTAL"));
+}
+
+TEST(Analyze, PlainExplainDoesNotRunTheQuery) {
+    Database db = populated(400);
+    const std::string plain = explain(db, "SELECT * FROM t");
+    REQUIRE(!mentions(plain, "TOTAL"));
+    REQUIRE(!mentions(plain, "actual"));
+    REQUIRE(!mentions(plain, "ESTIMATE"));
+}
+
+TEST(Analyze, CountsRowsTheAccessPathActuallyProduced) {
+    Database db = populated(400);
+    const std::string plan = analyze(db, "SELECT * FROM t WHERE bucket = 1");
+    REQUIRE(mentions(plan, "SCAN TABLE"));
+    REQUIRE(mentions(plan, "actual: 400 row(s) from the access path"));
+}
+
+TEST(Analyze, ShowsHowManyRowsTheFilterRemoved) {
+    Database db = populated(400);
+    // bucket cycles 0..3, so a quarter of the table survives.
+    REQUIRE(mentions(analyze(db, "SELECT * FROM t WHERE bucket = 1"),
+                     "400 in, 100 out"));
+}
+
+TEST(Analyze, AnIndexSeekReportsOnlyTheRowsItTouched) {
+    Database db = populated(400);
+    run(db, "CREATE INDEX idx_uid ON t (unique_id);");
+    const std::string plan = analyze(db, "SELECT * FROM t WHERE unique_id = 5");
+    REQUIRE(mentions(plan, "SEEK INDEX idx_uid"));
+    // One row reached, not four hundred: the whole point of the index.
+    REQUIRE(mentions(plan, "actual: 1 row(s) from the access path"));
+    REQUIRE(mentions(plan, "1 in, 1 out"));
+}
+
+TEST(Analyze, GradesItsOwnEstimate) {
+    Database db = populated(400);
+    run(db, "CREATE INDEX idx_uid ON t (unique_id);");
+    // The planner probes rather than guessing, so a healthy database should
+    // always report an exact estimate. Anything else means a row count or an
+    // index has drifted out of step with the table.
+    REQUIRE(mentions(analyze(db, "SELECT * FROM t WHERE unique_id = 5"),
+                     "predicted 1, actual 1 (exact)"));
+    REQUIRE(mentions(analyze(db, "SELECT * FROM t WHERE bucket = 2"),
+                     "predicted 400, actual 400 (exact)"));
+}
+
+TEST(Analyze, ReportsEveryStageOfThePipeline) {
+    Database db = populated(400);
+    const std::string plan = analyze(db,
+        "SELECT bucket, COUNT(*) AS n FROM t WHERE unique_id > 100 "
+        "GROUP BY bucket HAVING COUNT(*) > 1 ORDER BY n DESC LIMIT 2");
+    REQUIRE(mentions(plan, "FILTER"));
+    REQUIRE(mentions(plan, "GROUP BY"));
+    REQUIRE(mentions(plan, "group(s)"));
+    REQUIRE(mentions(plan, "AGGREGATE"));
+    REQUIRE(mentions(plan, "HAVING"));
+    REQUIRE(mentions(plan, "SORT BY"));
+    REQUIRE(mentions(plan, "LIMIT 2"));
+    REQUIRE(mentions(plan, "TOTAL"));
+}
+
+TEST(Analyze, WorksWithoutAFromClause) {
+    Database db;
+    const std::string plan = analyze(db, "SELECT 1 + 2");
+    REQUIRE(mentions(plan, "CONSTANT ROW"));
+    REQUIRE(mentions(plan, "TOTAL"));
+    REQUIRE(!mentions(plan, "ESTIMATE"));  // nothing was estimated
+}
+
+TEST(Analyze, AnalyseIsAcceptedAsASpelling) {
+    Database db = populated(50);
+    REQUIRE(mentions(analyze(db, "SELECT * FROM t"), "TOTAL"));
+    const ResultSet r = run(db, "EXPLAIN ANALYSE SELECT * FROM t");
+    REQUIRE_EQ(r.column_names[0], std::string("plan"));
+}

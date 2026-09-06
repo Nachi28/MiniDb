@@ -403,7 +403,7 @@ int main(int argc, char** argv) {
         return ok ? 0 : 1;
     }
 
-    std::cout << "MiniDB 1.0.0 - phase 6 (server)\n"
+    std::cout << "MiniDB 1.1.0\n"
               << "database: " << db.path() << "\n"
               << "Type .help for shell commands, .exit to quit.\n";
 

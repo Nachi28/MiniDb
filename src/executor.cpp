@@ -1,6 +1,9 @@
 #include "minidb/executor.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <iomanip>
+#include <sstream>
 #include <cmath>
 #include <optional>
 #include <string>
@@ -672,7 +675,8 @@ ResultSet Executor::exec_select(const SelectStmt& stmt) {
     Plan plan;
     if (table != nullptr) plan = choose_plan(db_, *table, stmt.where.get());
 
-    if (stmt.explain) {
+    // EXPLAIN ANALYZE runs the query; plain EXPLAIN stops here.
+    if (stmt.explain && !stmt.analyze) {
         ResultSet result;
         result.is_query = true;
         result.column_names.push_back("plan");
@@ -723,10 +727,20 @@ ResultSet Executor::exec_select(const SelectStmt& stmt) {
     // The predicate is re-evaluated on every candidate even when an index
     // produced it. That is what makes the lossy numeric key encoding safe: an
     // index can only ever hand over extra rows, never miss one.
+    // Counters for EXPLAIN ANALYZE. A handful of increments and one clock
+    // read, so they stay unconditional rather than costing a branch per row.
+    std::size_t access_rows = 0;
+    std::size_t groups_built = 0;
+    const auto started = std::chrono::steady_clock::now();
+    const std::size_t hits0 = db_.pager().cache_hits();
+    const std::size_t misses0 = db_.pager().cache_misses();
+    const std::size_t reads0 = db_.pager().disk_reads();
+
     std::vector<Row> scanned;
     std::vector<const Row*> matched;
     if (table != nullptr) {
         const auto keep = [&](Row& row) {
+            ++access_rows;  // counted before the filter, so we can show both
             if (stmt.where && !is_true(evaluate(*stmt.where, table, &row))) return;
             scanned.push_back(std::move(row));
         };
@@ -808,6 +822,7 @@ ResultSet Executor::exec_select(const SelectStmt& stmt) {
             }
             output.push_back(std::move(out));
         }
+        groups_built = groups.size();
     }
 
     const auto context_for = [&](const OutputRow& out) {
@@ -840,6 +855,7 @@ ResultSet Executor::exec_select(const SelectStmt& stmt) {
     }
 
     // 6. LIMIT.
+    const std::size_t rows_before_limit = output.size();
     if (stmt.limit >= 0) {
         const std::size_t limit = static_cast<std::size_t>(stmt.limit);
         if (limit < output.size()) output.resize(limit);
@@ -878,7 +894,111 @@ ResultSet Executor::exec_select(const SelectStmt& stmt) {
         result.rows.push_back(std::move(projected));
     }
 
-    return result;
+    if (!stmt.analyze) return result;
+
+    // EXPLAIN ANALYZE: throw the rows away and report what happened instead,
+    // beside what the planner predicted. A planner that cannot tell you when
+    // it guessed wrong is only half a planner.
+    const double elapsed_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                 started)
+            .count();
+    const std::size_t hits = db_.pager().cache_hits() - hits0;
+    const std::size_t misses = db_.pager().cache_misses() - misses0;
+    const std::size_t reads = db_.pager().disk_reads() - reads0;
+    const std::size_t produced = result.rows.size();
+
+    ResultSet report;
+    report.is_query = true;
+    report.column_names.push_back("plan");
+    const auto line = [&](const std::string& text) {
+        Row row;
+        row.push_back(Value::text(text));
+        report.rows.push_back(std::move(row));
+    };
+    const auto ms = [](double v) {
+        std::ostringstream out;
+        out << std::fixed << std::setprecision(3) << v << " ms";
+        return out.str();
+    };
+
+    if (table == nullptr) {
+        line("CONSTANT ROW (no FROM clause)");
+    } else {
+        line(plan.describe());
+        line("  actual: " + std::to_string(access_rows) + " row(s) from the access path");
+    }
+    if (stmt.where) {
+        line("  FILTER " + to_string(*stmt.where) + "  ->  " +
+             std::to_string(access_rows) + " in, " + std::to_string(scanned.size()) +
+             " out");
+    }
+    if (!stmt.group_by.empty()) {
+        std::string text = "  GROUP BY ";
+        for (std::size_t i = 0; i < stmt.group_by.size(); ++i) {
+            if (i > 0) text += ", ";
+            text += to_string(*stmt.group_by[i]);
+        }
+        line(text + "  ->  " + std::to_string(matched.size()) + " row(s) in, " +
+             std::to_string(groups_built) + " group(s)");
+    }
+    if (!aggregates.empty()) {
+        line("  AGGREGATE " + std::to_string(aggregates.size()) + " call(s)");
+    }
+    if (stmt.having) {
+        line("  HAVING " + to_string(*stmt.having) + "  ->  " +
+             std::to_string(groups_built) + " in, " + std::to_string(rows_before_limit) +
+             " kept");
+    }
+    if (!order_exprs.empty()) {
+        std::string text = "  SORT BY ";
+        for (std::size_t i = 0; i < order_exprs.size(); ++i) {
+            if (i > 0) text += ", ";
+            text += to_string(*order_exprs[i]);
+            if (stmt.order_by[i].descending) text += " DESC";
+        }
+        line(text + "  ->  " + std::to_string(rows_before_limit) + " row(s)");
+    }
+    if (stmt.limit >= 0) {
+        line("  LIMIT " + std::to_string(stmt.limit) + "  ->  " +
+             std::to_string(rows_before_limit) + " in, " + std::to_string(produced) +
+             " out");
+    }
+
+    {
+        std::string text = "TOTAL  ->  " + std::to_string(produced) + " row(s) in " +
+                           ms(elapsed_ms);
+        const std::size_t touched = hits + misses;
+        if (touched > 0) {
+            std::ostringstream rate;
+            rate << std::fixed << std::setprecision(1)
+                 << (100.0 * static_cast<double>(hits) / static_cast<double>(touched));
+            text += ", " + std::to_string(touched) + " page fetch(es), " + rate.str() +
+                    "% cache hit";
+        }
+        if (reads > 0) text += ", " + std::to_string(reads) + " disk read(s)";
+        line(text);
+    }
+
+    // The line that makes this worth having: was the estimate any good?
+    if (table != nullptr) {
+        const std::int64_t predicted =
+            static_cast<std::int64_t>(plan.estimated_rows + 0.5);
+        const std::int64_t got = static_cast<std::int64_t>(access_rows);
+        std::string verdict;
+        if (!plan.exact_estimate) {
+            verdict = "lower bound only; the probe stopped once the index had lost";
+        } else if (predicted == got) {
+            verdict = "exact";
+        } else {
+            const std::int64_t off = predicted > got ? predicted - got : got - predicted;
+            verdict = "off by " + std::to_string(off);
+        }
+        line("ESTIMATE  ->  predicted " + std::to_string(predicted) + ", actual " +
+             std::to_string(got) + " (" + verdict + ")");
+    }
+
+    return report;
 }
 
 }  // namespace minidb

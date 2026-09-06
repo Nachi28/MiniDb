@@ -122,8 +122,10 @@ Statement Parser::parse_statement() {
 
     if (check(TokenType::KwExplain)) {
         advance();
+        const bool analyze = match(TokenType::KwAnalyze);
         SelectStmt select = parse_select();
         select.explain = true;
+        select.analyze = analyze;
         return Statement(std::move(select));
     }
 

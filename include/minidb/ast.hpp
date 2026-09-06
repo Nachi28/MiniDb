@@ -95,6 +95,9 @@ struct SelectStmt {
     std::vector<OrderTerm> order_by;
     std::int64_t limit = -1;       // -1 => unlimited
     bool explain = false;          // EXPLAIN prefix: describe, do not run
+    // EXPLAIN ANALYZE: run it, then report the plan with what actually
+    // happened beside what was predicted.
+    bool analyze = false;
 };
 
 // BEGIN / COMMIT / ROLLBACK. Outside an explicit transaction every

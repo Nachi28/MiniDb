@@ -61,3 +61,9 @@ EXPLAIN SELECT kind, COUNT(*) AS n FROM events WHERE score >= 100
   GROUP BY kind HAVING COUNT(*) > 1 ORDER BY n DESC LIMIT 2;
 
 -- (In the interactive shell, `.indexes` lists them.)
+
+-- EXPLAIN predicts. EXPLAIN ANALYZE runs the query and reports what actually
+-- happened next to what was predicted, including how many rows the filter threw
+-- away and how the buffer pool behaved. Postgres has this; SQLite does not.
+EXPLAIN ANALYZE SELECT * FROM events WHERE score = 42;
+EXPLAIN ANALYZE SELECT kind, COUNT(*) FROM events WHERE score >= 100 GROUP BY kind;

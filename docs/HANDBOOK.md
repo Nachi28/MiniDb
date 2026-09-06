@@ -358,7 +358,8 @@ renumbering.
 plus a case in `binary_op_symbol()` and `eval_binary()`. Nothing else.
 
 `CREATE` dispatches on the *next* token (`peek(1)`) to choose table or index.
-`EXPLAIN` is a prefix that parses a `SELECT` and sets `explain = true`.
+`EXPLAIN` is a prefix that parses a `SELECT` and sets `explain = true`; a
+following `ANALYZE` (or `ANALYSE`) also sets `analyze = true`.
 
 ### 5.4 AST
 
@@ -472,6 +473,21 @@ bool  is_aggregate_name(const std::string&);
 5. ORDER BY (`stable_sort`)
 6. LIMIT
 7. Projection
+
+**`EXPLAIN` vs `EXPLAIN ANALYZE`.** Plain `EXPLAIN` returns the plan after
+stage 2 and never touches a row. `EXPLAIN ANALYZE` runs all seven stages, then
+discards the result rows and returns the plan annotated with what actually
+happened: rows out of the access path, rows in and out of the filter, group
+count, rows kept by `HAVING`, rows dropped by `LIMIT`, elapsed time, and buffer
+pool deltas taken from `Pager`'s counters.
+
+The `ESTIMATE` line compares `plan.estimated_rows` against the rows the access
+path really produced. Because the planner probes rather than assuming, this
+should always read `exact`; a mismatch means a `row_count_` or an index has
+drifted out of step with its table, so the line doubles as a consistency check.
+
+Instrumentation is unconditional -- a few counters and one clock read -- rather
+than branching on `analyze` inside the row loop.
 
 **The aggregate mechanism.** Aggregates are computed once per group and stored
 in a `map<const Expr*, Value>` keyed by AST node identity. `evaluate()` then
@@ -717,7 +733,7 @@ SELECT  { * | expr [[AS] alias] } [, ...]
         [ORDER BY { expr | alias | position } [ASC|DESC] [, ...]]
         [LIMIT integer];
 
-EXPLAIN SELECT ...;
+EXPLAIN [ANALYZE] SELECT ...;
 
 BEGIN [TRANSACTION];   COMMIT;   END;   ROLLBACK;
 ```
